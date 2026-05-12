@@ -78,6 +78,15 @@ else
   git commit -m "chore: bump version to $NEW_VERSION (build $NEW_BUILD)"
   git tag "v$NEW_VERSION"
   echo "✓ Created commit and tag v$NEW_VERSION"
-  echo ""
-  echo "Push with: git push && git push --tags"
+
+  if [[ "${SKIP_PUSH:-}" != "1" ]]; then
+    echo "Pushing to origin..."
+    git push origin main
+    git push origin "v$NEW_VERSION"
+    echo "✓ Pushed. GitHub Actions will build and create a draft release."
+    echo "  → https://github.com/jordanbaird/Ice/releases"
+  else
+    echo "SKIP_PUSH=1, skipping git push."
+    echo "Push manually: git push && git push --tags"
+  fi
 fi
