@@ -78,6 +78,10 @@ final class MenuBarManager: ObservableObject {
             MenuBarSection(name: .hidden, appState: appState),
             MenuBarSection(name: .alwaysHidden, appState: appState),
         ]
+
+        for section in sections {
+            section.controlItem.refreshAfterSectionInitialization()
+        }
     }
 
     /// Configures the internal observers for the manager.
@@ -189,17 +193,26 @@ final class MenuBarManager: ObservableObject {
                     var items = MenuBarItem.getMenuBarItems(on: displayID, onScreenOnly: false, activeSpaceOnly: true)
 
                     // Filter the items down according to the currently enabled/shown sections.
+                    let hiddenControlWindowID = section(withName: .hidden)?.controlItem.windowID
+                    let alwaysHiddenControlWindowID = section(withName: .alwaysHidden)?.controlItem.windowID
+
                     if
                         let alwaysHiddenSection = section(withName: .alwaysHidden),
                         alwaysHiddenSection.isEnabled
                     {
                         if alwaysHiddenSection.controlItem.state == .hideItems {
-                            if let alwaysHiddenControlItem = items.firstIndex(matching: .alwaysHiddenControlItem).map({ items.remove(at: $0) }) {
+                            if let alwaysHiddenControlItem = items.takeControlItem(
+                                matching: .alwaysHiddenControlItem,
+                                fallbackWindowID: alwaysHiddenControlWindowID
+                            ) {
                                 items.trimPrefix { $0.frame.maxX <= alwaysHiddenControlItem.frame.minX }
                             }
                         }
                     } else {
-                        if let hiddenControlItem = items.firstIndex(matching: .hiddenControlItem).map({ items.remove(at: $0) }) {
+                        if let hiddenControlItem = items.takeControlItem(
+                            matching: .hiddenControlItem,
+                            fallbackWindowID: hiddenControlWindowID
+                        ) {
                             items.trimPrefix { $0.frame.maxX <= hiddenControlItem.frame.minX }
                         }
                     }

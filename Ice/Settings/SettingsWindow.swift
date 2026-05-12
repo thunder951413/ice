@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct SettingsWindow: Scene {
-    @ObservedObject var appState: AppState
+    let appState: AppState
 
     var body: some Scene {
         Window(Constants.settingsWindowTitle, id: Constants.settingsWindowID) {
@@ -20,7 +20,7 @@ struct SettingsWindow: Scene {
                 .frame(minWidth: 825, minHeight: 500)
         }
         .commandsRemoved()
-        .windowResizability(.contentSize)
+        .windowResizability(.automatic)
         .defaultSize(width: 900, height: 625)
         .environmentObject(appState)
         .environmentObject(appState.navigationState)

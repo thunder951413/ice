@@ -51,6 +51,9 @@ final class ControlItem {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Storage for observers tied to the current status item window.
+    private var windowCancellables = Set<AnyCancellable>()
+
     /// The menu bar section associated with the control item.
     private weak var section: MenuBarSection? {
         appState?.menuBarManager.sections.first { $0.controlItem === self }
@@ -63,10 +66,7 @@ final class ControlItem {
 
     /// The identifier of the control item's window.
     var windowID: CGWindowID? {
-        guard let window else {
-            return nil
-        }
-        return CGWindowID(window.windowNumber)
+        window?.cgWindowID
     }
 
     /// A Boolean value that indicates whether the control item serves as
@@ -149,36 +149,18 @@ final class ControlItem {
             .sink { [weak self] (isVisible, state) in
                 guard
                     let self,
-                    let section
+                    section != nil
                 else {
                     return
                 }
-                if isVisible {
-                    statusItem.length = switch section.name {
-                    case .visible: Lengths.standard
-                    case .hidden, .alwaysHidden:
-                        switch state {
-                        case .hideItems: Lengths.expanded
-                        case .showItems: Lengths.standard
-                        }
-                    }
-                    constraint?.isActive = true
-                } else {
-                    statusItem.length = 0
-                    constraint?.isActive = false
-                    if let window {
-                        var size = window.frame.size
-                        size.width = 1
-                        window.setContentSize(size)
-                    }
-                }
+                updateStatusItemLayout(isVisible: isVisible, state: state)
             }
             .store(in: &c)
 
         constraint?.publisher(for: \.isActive)
             .removeDuplicates()
             .sink { [weak self] isActive in
-                self?.isVisible = isActive
+                self?.setIsVisible(isActive)
             }
             .store(in: &c)
 
@@ -213,16 +195,23 @@ final class ControlItem {
             }
             .store(in: &c)
 
-        window?.publisher(for: \.frame)
-            .sink { [weak self] frame in
-                guard
-                    let self,
-                    let screen = window?.screen,
-                    screen.frame.intersects(frame)
-                else {
+        statusItem.button?.publisher(for: \.window)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] window in
+                guard let self else {
                     return
                 }
-                windowFrame = frame
+                observeWindow(window)
+                Logger.controlItem.info(
+                    """
+                    Button window changed for \(identifier.rawValue): \
+                    hasWindow=\(window != nil), \
+                    windowNumber=\(window?.windowNumber ?? -1), \
+                    cgWindowID=\(String(describing: window?.cgWindowID)), \
+                    isAddedToMenuBar=\(isAddedToMenuBar), \
+                    isVisible=\(isVisible)
+                    """
+                )
             }
             .store(in: &c)
 
@@ -236,6 +225,13 @@ final class ControlItem {
                     else {
                         return
                     }
+                    Logger.controlItem.info(
+                        """
+                        Received ShowIceIcon=\(showIceIcon) for \(identifier.rawValue): \
+                        isAddedToMenuBar=\(isAddedToMenuBar), \
+                        windowID=\(String(describing: windowID))
+                        """
+                    )
                     if showIceIcon {
                         addToMenuBar()
                     } else {
@@ -291,7 +287,7 @@ final class ControlItem {
                     else {
                         return
                     }
-                    isVisible = shouldShow
+                    setIsVisible(shouldShow)
                 }
                 .store(in: &c)
 
@@ -341,7 +337,7 @@ final class ControlItem {
 
         switch section.name {
         case .visible:
-            isVisible = true
+            setIsVisible(true)
             // Enable the cell, as it may have been previously disabled.
             button.cell?.isEnabled = true
             let icon = appState.settingsManager.generalSettingsManager.iceIcon
@@ -364,14 +360,14 @@ final class ControlItem {
         case .hidden, .alwaysHidden:
             switch state {
             case .hideItems:
-                isVisible = true
+                setIsVisible(true)
                 // Prevent the cell from highlighting while expanded.
                 button.cell?.isEnabled = false
                 // Cell still sometimes briefly flashes on expansion unless manually unhighlighted.
                 button.isHighlighted = false
                 button.image = nil
             case .showItems:
-                isVisible = appState.settingsManager.advancedSettingsManager.showSectionDividers
+                setIsVisible(appState.settingsManager.advancedSettingsManager.showSectionDividers)
                 // Enable the cell, as it may have been previously disabled.
                 button.cell?.isEnabled = true
                 // Set the image based on the section name and the hiding state.
@@ -383,6 +379,91 @@ final class ControlItem {
                 case .visible: break
                 }
             }
+        }
+    }
+
+    func refreshAfterSectionInitialization() {
+        guard section != nil else {
+            return
+        }
+        updateStatusItem(with: state)
+        updateStatusItemLayout(isVisible: isVisible, state: state)
+    }
+
+    private func setIsVisible(_ isVisible: Bool) {
+        guard self.isVisible != isVisible else {
+            return
+        }
+        self.isVisible = isVisible
+    }
+
+    private func updateStatusItemLayout(isVisible: Bool, state: HidingState) {
+        guard let section else {
+            return
+        }
+        if isVisible {
+            statusItem.length = switch section.name {
+            case .visible: Lengths.standard
+            case .hidden, .alwaysHidden:
+                switch state {
+                case .hideItems: Lengths.expanded
+                case .showItems: Lengths.standard
+                }
+            }
+            constraint?.isActive = true
+        } else {
+            statusItem.length = 0
+            constraint?.isActive = false
+            if let window {
+                shrinkWindowIfNeeded(window)
+            }
+        }
+    }
+
+    private func setWindowFrame(_ frame: CGRect?) {
+        DispatchQueue.main.async { [weak self] in
+            guard
+                let self,
+                self.windowFrame != frame
+            else {
+                return
+            }
+            self.windowFrame = frame
+        }
+    }
+
+    private func observeWindow(_ window: NSWindow?) {
+        windowCancellables.removeAll()
+
+        guard let window else {
+            setWindowFrame(nil)
+            return
+        }
+
+        setWindowFrame(window.frame)
+
+        window.publisher(for: \.frame)
+            .sink { [weak self, weak window] frame in
+                guard
+                    let self,
+                    let screen = window?.screen,
+                    screen.frame.intersects(frame)
+                else {
+                    return
+                }
+                setWindowFrame(frame)
+            }
+            .store(in: &windowCancellables)
+    }
+
+    private func shrinkWindowIfNeeded(_ window: NSWindow) {
+        DispatchQueue.main.async {
+            var size = window.frame.size
+            guard size.width != 1 else {
+                return
+            }
+            size.width = 1
+            window.setContentSize(size)
         }
     }
 
@@ -543,16 +624,20 @@ final class ControlItem {
     /// Adds the control item to the menu bar.
     func addToMenuBar() {
         guard !isAddedToMenuBar else {
+            Logger.controlItem.debug("Skipping addToMenuBar for \(identifier.rawValue): already visible")
             return
         }
+        Logger.controlItem.info("Adding \(identifier.rawValue) to menu bar")
         statusItem.isVisible = true
     }
 
     /// Removes the control item from the menu bar.
     func removeFromMenuBar() {
         guard isAddedToMenuBar else {
+            Logger.controlItem.debug("Skipping removeFromMenuBar for \(identifier.rawValue): already hidden")
             return
         }
+        Logger.controlItem.info("Removing \(identifier.rawValue) from menu bar")
         // Setting `statusItem.isVisible` to `false` has the unwanted side
         // effect of deleting the preferredPosition. Cache and restore it.
         let autosaveName = statusItem.autosaveName as String

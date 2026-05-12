@@ -15,25 +15,12 @@ extension View {
         background {
             if appState.isActiveSpaceFullscreen {
                 Color.black
-            } else if let averageColorInfo {
-                switch averageColorInfo.source {
-                case .menuBarWindow:
-                    Color(cgColor: averageColorInfo.color)
-                        .overlay(
-                            Material.bar
-                                .opacity(0.2)
-                                .blendMode(.softLight)
-                        )
-                case .desktopWallpaper:
-                    Color(cgColor: averageColorInfo.color)
-                        .overlay(
-                            Material.bar
-                                .opacity(0.5)
-                                .blendMode(.softLight)
-                        )
-                }
             } else {
-                Color.defaultLayoutBar
+                Color.black
+                    .overlay(
+                        Material.bar
+                            .opacity(averageColorInfo == nil ? 0.35 : 0.2)
+                    )
             }
         }
         .overlay {

@@ -321,6 +321,32 @@ extension Collection where Element == MenuBarItem {
     }
 }
 
+extension Array where Element == MenuBarItem {
+    /// Removes and returns the first item matching the given info, falling back
+    /// to the provided window identifier when the window has no usable title.
+    mutating func takeControlItem(
+        matching info: MenuBarItemInfo,
+        fallbackWindowID: CGWindowID?
+    ) -> MenuBarItem? {
+        if let index = firstIndex(matching: info) {
+            return remove(at: index)
+        }
+
+        if
+            let fallbackWindowID,
+            let index = firstIndex(where: { $0.windowID == fallbackWindowID })
+        {
+            return remove(at: index)
+        }
+
+        if let fallbackWindowID {
+            return MenuBarItem(windowID: fallbackWindowID)
+        }
+
+        return nil
+    }
+}
+
 // MARK: - Comparable
 
 extension Comparable {
@@ -471,6 +497,27 @@ extension NSStatusItem {
         }
         self.menu = menu
         button?.performClick(nil)
+    }
+}
+
+// MARK: - NSWindow
+
+extension NSWindow {
+    /// The window identifier, if the window has been assigned a valid one.
+    var cgWindowID: CGWindowID? {
+        if let windowID = CGWindowID(exactly: windowNumber) {
+            return windowID
+        }
+
+        let rawValue = UInt64(bitPattern: Int64(windowNumber))
+        let upperBits = rawValue >> 32
+        let lowerBits = rawValue & 0xFFFF_FFFF
+
+        if lowerBits == 0, upperBits != 0 {
+            return CGWindowID(upperBits)
+        }
+
+        return nil
     }
 }
 

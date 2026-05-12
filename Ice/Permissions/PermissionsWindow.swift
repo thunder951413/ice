@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct PermissionsWindow: Scene {
-    @ObservedObject var appState: AppState
+    let appState: AppState
 
     var body: some Scene {
         Window(Constants.permissionsWindowTitle, id: Constants.permissionsWindowID) {

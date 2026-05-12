@@ -34,7 +34,11 @@ extension View {
                         key: FramePreferenceKey.self,
                         value: proxy.frame(in: coordinateSpace)
                     )
-                    .onPreferenceChange(FramePreferenceKey.self, perform: action)
+                    .onPreferenceChange(FramePreferenceKey.self) { frame in
+                        DispatchQueue.main.async {
+                            action(frame)
+                        }
+                    }
             }
         }
     }

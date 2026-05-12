@@ -112,6 +112,19 @@ final class GeneralSettingsManager: ObservableObject {
                 lastCustomIceIcon = iceIcon
             }
         }
+
+        Logger.generalSettingsManager.info(
+            """
+            Loaded initial general settings: \
+            showIceIcon=\(showIceIcon), \
+            useIceBar=\(useIceBar), \
+            showOnClick=\(showOnClick), \
+            showOnHover=\(showOnHover), \
+            showOnScroll=\(showOnScroll), \
+            autoRehide=\(autoRehide), \
+            rehideStrategy=\(rehideStrategy.rawValue)
+            """
+        )
     }
 
     private func configureCancellables() {

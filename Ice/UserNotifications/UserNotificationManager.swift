@@ -31,7 +31,12 @@ final class UserNotificationManager: NSObject {
             do {
                 try await notificationCenter.requestAuthorization(options: [.badge, .alert, .sound])
             } catch {
-                Logger.userNotifications.error("Failed to request authorization for notifications: \(error)")
+                let nsError = error as NSError
+                if nsError.domain == UNErrorDomain, nsError.code == 1 {
+                    Logger.userNotifications.debug("Notifications are disabled for this application")
+                } else {
+                    Logger.userNotifications.error("Failed to request authorization for notifications: \(error)")
+                }
             }
         }
     }

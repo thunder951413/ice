@@ -63,6 +63,9 @@ final class AppState: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Whether a forwarded objectWillChange notification has already been queued.
+    private var isObjectWillChangeScheduled = false
+
     /// A Boolean value that indicates whether the app is running as a SwiftUI preview.
     let isPreview: Bool = {
         #if DEBUG
@@ -126,11 +129,16 @@ final class AppState: ObservableObject {
                     guard let self else {
                         return
                     }
-                    navigationState.isSettingsPresented = isVisible
+                    DispatchQueue.main.async {
+                        guard self.navigationState.isSettingsPresented != isVisible else {
+                            return
+                        }
+                        self.navigationState.isSettingsPresented = isVisible
+                    }
                 }
                 .store(in: &c)
         } else {
-            Logger.appState.warning("No settings window!")
+            Logger.appState.debug("Settings window has not been assigned yet")
         }
 
         Publishers.Merge(
@@ -155,40 +163,65 @@ final class AppState: ObservableObject {
 
         menuBarManager.objectWillChange
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.scheduleObjectWillChange()
             }
             .store(in: &c)
         permissionsManager.objectWillChange
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.scheduleObjectWillChange()
             }
             .store(in: &c)
         settingsManager.objectWillChange
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.scheduleObjectWillChange()
             }
             .store(in: &c)
         updatesManager.objectWillChange
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.scheduleObjectWillChange()
             }
             .store(in: &c)
 
         cancellables = c
     }
 
+    private func scheduleObjectWillChange() {
+        guard !isObjectWillChangeScheduled else {
+            return
+        }
+        isObjectWillChangeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            self.isObjectWillChangeScheduled = false
+            self.objectWillChange.send()
+        }
+    }
+
     /// Sets up the app state.
     func performSetup() {
+        Logger.appState.info("performSetup starting")
         configureCancellables()
+        Logger.appState.debug("Configured app-state cancellables")
         permissionsManager.stopAllChecks()
+        Logger.appState.debug("Stopped permission checks")
         menuBarManager.performSetup()
+        Logger.appState.debug("Performed menuBarManager setup")
         appearanceManager.performSetup()
+        Logger.appState.debug("Performed appearanceManager setup")
         eventManager.performSetup()
+        Logger.appState.debug("Performed eventManager setup")
         settingsManager.performSetup()
+        Logger.appState.debug("Performed settingsManager setup")
         itemManager.performSetup()
+        Logger.appState.debug("Performed itemManager setup")
         imageCache.performSetup()
+        Logger.appState.debug("Performed imageCache setup")
         updatesManager.performSetup()
+        Logger.appState.debug("Performed updatesManager setup")
         userNotificationManager.performSetup()
+        Logger.appState.info("performSetup finished")
     }
 
     /// Assigns the app delegate to the app state.
@@ -206,8 +239,13 @@ final class AppState: ObservableObject {
             Logger.appState.warning("Window \(window.identifier?.rawValue ?? "<NIL>") is not the settings window!")
             return
         }
+        guard settingsWindow !== window else {
+            return
+        }
         settingsWindow = window
-        configureCancellables()
+        DispatchQueue.main.async { [weak self] in
+            self?.configureCancellables()
+        }
     }
 
     /// Assigns the permissions window to the app state.
@@ -216,8 +254,13 @@ final class AppState: ObservableObject {
             Logger.appState.warning("Window \(window.identifier?.rawValue ?? "<NIL>") is not the permissions window!")
             return
         }
+        guard permissionsWindow !== window else {
+            return
+        }
         permissionsWindow = window
-        configureCancellables()
+        DispatchQueue.main.async { [weak self] in
+            self?.configureCancellables()
+        }
     }
 
     /// Opens the settings window.

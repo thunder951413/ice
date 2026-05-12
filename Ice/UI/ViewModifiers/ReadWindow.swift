@@ -12,7 +12,7 @@ private struct WindowReader: NSViewRepresentable {
 
         func configure(for view: NSView, onWindowChange: @MainActor @escaping (NSWindow?) -> Void) {
             cancellable = view.publisher(for: \.window).sink { window in
-                Task { @MainActor in
+                DispatchQueue.main.async {
                     onWindowChange(window)
                 }
             }

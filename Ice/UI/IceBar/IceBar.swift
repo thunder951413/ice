@@ -67,7 +67,7 @@ final class IceBarPanel: NSPanel {
                         // Only continue if the menu bar is automatically hidden, as Ice
                         // can't currently display its menu bar items.
                         appState.menuBarManager.isMenuBarHiddenBySystemUserDefaults,
-                        let info = window.flatMap({ WindowInfo(windowID: CGWindowID($0.windowNumber)) }),
+                        let info = window?.cgWindowID.flatMap({ WindowInfo(windowID: $0) }),
                         // Window being offscreen means the menu bar is currently hidden.
                         // Close the bar, as things will start to look weird if we don't.
                         !info.isOnScreen
@@ -136,10 +136,7 @@ final class IceBarPanel: NSPanel {
                 guard
                     lowerBound <= upperBound,
                     let section = appState.menuBarManager.section(withName: .visible),
-                    let windowID = section.controlItem.windowID,
-                    // Bridging.getWindowFrame is more reliable than ControlItem.windowFrame,
-                    // i.e. if the control item is offscreen.
-                    let itemFrame = Bridging.getWindowFrame(for: windowID)
+                    let itemFrame = visibleControlItemFrame(for: section)
                 else {
                     return originForRightOfScreen
                 }
@@ -149,6 +146,21 @@ final class IceBarPanel: NSPanel {
         }
 
         setFrameOrigin(getOrigin(for: appState.settingsManager.generalSettingsManager.iceBarLocation))
+    }
+
+    private func visibleControlItemFrame(for section: MenuBarSection) -> CGRect? {
+        if let frame = section.controlItem.windowFrame ?? section.controlItem.window?.frame {
+            return frame
+        }
+
+        if
+            let windowID = section.controlItem.windowID,
+            let frame = Bridging.getWindowFrame(for: windowID)
+        {
+            return frame
+        }
+
+        return nil
     }
 
     func show(section: MenuBarSection.Name, on screen: NSScreen) async {
@@ -384,7 +396,7 @@ private struct IceBarItemView: View {
 
     private var image: NSImage? {
         guard
-            let image = imageCache.images[item.info],
+            let image = imageCache.images[item.windowID],
             let screen = imageCache.screen
         else {
             return nil

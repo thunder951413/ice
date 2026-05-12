@@ -271,8 +271,23 @@ extension MigrationManager {
     }
 
     private func migrateAppearanceConfiguration0_11_10() -> MigrationResult {
+        if let data = Defaults.data(forKey: .menuBarAppearanceConfigurationV2) {
+            do {
+                _ = try decoder.decode(MenuBarAppearanceConfigurationV2.self, from: data)
+                return .success
+            } catch {
+                return .failureAndLogError(.appearanceConfigurationMigrationError(.otherError(error)))
+            }
+        }
+
         guard let oldData = Defaults.data(forKey: .menuBarAppearanceConfiguration) else {
-            return .failureAndLogError(.appearanceConfigurationMigrationError(.missingConfiguration))
+            do {
+                let newData = try encoder.encode(MenuBarAppearanceConfigurationV2.defaultConfiguration)
+                Defaults.set(newData, forKey: .menuBarAppearanceConfigurationV2)
+                return .success
+            } catch {
+                return .failureAndLogError(.appearanceConfigurationMigrationError(.otherError(error)))
+            }
         }
         do {
             let oldConfiguration = try decoder.decode(MenuBarAppearanceConfigurationV1.self, from: oldData)
@@ -375,14 +390,11 @@ extension MigrationManager {
 
     enum AppearanceConfigurationMigrationError: Error, CustomStringConvertible {
         case otherError(any Error)
-        case missingConfiguration
 
         var description: String {
             switch self {
             case .otherError(let error):
                 error.localizedDescription
-            case .missingConfiguration:
-                "Missing menu bar appearance configuration"
             }
         }
     }

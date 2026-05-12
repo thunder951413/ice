@@ -4,6 +4,7 @@
 //
 
 import Combine
+import Foundation
 
 @MainActor
 final class SettingsManager: ObservableObject {
@@ -18,6 +19,9 @@ final class SettingsManager: ObservableObject {
 
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
+
+    /// Whether a forwarded objectWillChange notification has already been queued.
+    private var isObjectWillChangeScheduled = false
 
     /// The shared app state.
     private(set) weak var appState: AppState?
@@ -41,21 +45,35 @@ final class SettingsManager: ObservableObject {
 
         generalSettingsManager.objectWillChange
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.scheduleObjectWillChange()
             }
             .store(in: &c)
         advancedSettingsManager.objectWillChange
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.scheduleObjectWillChange()
             }
             .store(in: &c)
         hotkeySettingsManager.objectWillChange
             .sink { [weak self] in
-                self?.objectWillChange.send()
+                self?.scheduleObjectWillChange()
             }
             .store(in: &c)
 
         cancellables = c
+    }
+
+    private func scheduleObjectWillChange() {
+        guard !isObjectWillChangeScheduled else {
+            return
+        }
+        isObjectWillChangeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            self.isObjectWillChangeScheduled = false
+            self.objectWillChange.send()
+        }
     }
 }
 

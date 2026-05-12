@@ -47,12 +47,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard !appState.isPreview else {
                 return
             }
+            Logger.appDelegate.info("Starting delayed app setup with permissionsState=\(String(describing: appState.permissionsManager.permissionsState))")
             // If we have the required permissions, set up the shared app state.
             // Otherwise, open the permissions window.
             switch appState.permissionsManager.permissionsState {
             case .hasAllPermissions, .hasRequiredPermissions:
+                Logger.appDelegate.info("Calling appState.performSetup()")
                 appState.performSetup()
             case .missingPermissions:
+                Logger.appDelegate.info("Opening permissions window instead of performing setup")
                 appState.activate(withPolicy: .regular)
                 appState.openPermissionsWindow()
             }
