@@ -52,8 +52,18 @@ final class MenuBarItemManager: ObservableObject {
             }
         }
 
+        /// A description of all items in each section of the cache, for debugging.
+        var sectionStatesDescription: String {
+            MenuBarSection.Name.allCases.map { section in
+                "\(section)=\(self[section].map(\.info))"
+            }.joined(separator: " | ")
+        }
+
         /// Returns the name of the section for the given menu bar item.
         func section(for item: MenuBarItem) -> MenuBarSection.Name? {
+            for (section, items) in self.items where items.contains(where: { $0.windowID == item.windowID }) {
+                return section
+            }
             for (section, items) in self.items where items.contains(where: { $0.info == item.info }) {
                 return section
             }
@@ -71,6 +81,8 @@ final class MenuBarItemManager: ObservableObject {
     private struct TempShownItemContext {
         /// The window identifier associated with the item.
         let windowID: CGWindowID
+
+        let info: MenuBarItemInfo
 
         /// The destination to return the item to.
         let returnDestination: MoveDestination
@@ -99,6 +111,11 @@ final class MenuBarItemManager: ObservableObject {
 
     /// The shared app state.
     private(set) weak var appState: AppState?
+
+    /// The number of currently temporarily shown menu bar items.
+    var tempShownItemCount: Int {
+        tempShownItemContexts.count
+    }
 
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
@@ -244,7 +261,7 @@ extension MenuBarItemManager {
         alwaysHiddenControlFrame: CGRect?,
         otherItems: [MenuBarItem]
     ) {
-        Logger.itemManager.debug("Caching menu bar items")
+        Logger.itemManager.info("UNCHECKED cache start hiddenControlFrame=\(NSStringFromRect(hiddenControlFrame)) alwaysHiddenControlFrame=\(String(describing: alwaysHiddenControlFrame.map(NSStringFromRect)))")
 
         let predicates = Predicates.sectionPredicates(
             hiddenControlFrame: hiddenControlFrame,
@@ -255,11 +272,9 @@ extension MenuBarItemManager {
         var tempShownItems = [(MenuBarItem, MoveDestination)]()
 
         for item in otherItems {
-            if let context = tempShownItemContexts.first(where: { $0.windowID == item.windowID }) {
-                // Keep track of temporarily shown items and their return destinations separately.
-                // We want to cache them as if they were in their original locations. Once all other
-                // items are cached, use the return destinations to insert the items into the cache
-                // at the correct position.
+            if let context = tempShownItemContexts.first(where: { $0.windowID == item.windowID })
+                ?? tempShownItemContexts.first(where: { $0.info == item.info }) {
+                Logger.itemManager.info("[UNCHECKED] temp item found: item=\(item.logString) windowID=\(item.windowID) returnDest=\(context.returnDestination.logString)")
                 tempShownItems.append((item, context.returnDestination))
             } else if predicates.isInVisibleSection(item) {
                 cache[.visible].append(item)
@@ -272,14 +287,19 @@ extension MenuBarItemManager {
             }
         }
 
+        Logger.itemManager.info("[UNCHECKED] after predicate pass: visible=\(cache[.visible].count) hidden=\(cache[.hidden].count) alwaysHidden=\(cache[.alwaysHidden].count) tempItems=\(tempShownItems.count)")
+
         for (item, destination) in tempShownItems {
+            Logger.itemManager.info("[UNCHECKED] inserting temp item=\(item.logString) dest=\(destination.logString)")
             switch destination {
             case .leftOfItem(let targetItem):
                 switch targetItem.info {
                 case .hiddenControlItem:
                     cache[.hidden].append(item)
+                    Logger.itemManager.info("[UNCHECKED] .leftOf hiddenControlItem -> appended to hidden")
                 case .alwaysHiddenControlItem:
                     cache[.alwaysHidden].append(item)
+                    Logger.itemManager.info("[UNCHECKED] .leftOf alwaysHiddenControlItem -> appended to alwaysHidden")
                 default:
                     if
                         let section = cache.section(for: targetItem),
@@ -287,14 +307,19 @@ extension MenuBarItemManager {
                     {
                         let clampedIndex = index.clamped(to: cache[section].startIndex...cache[section].endIndex)
                         cache[section].insert(item, at: clampedIndex)
+                        Logger.itemManager.info("[UNCHECKED] .leftOf targetItem=\(targetItem.logString) -> inserted into \(section) at \(clampedIndex)")
+                    } else {
+                        Logger.itemManager.info("[UNCHECKED] .leftOf targetItem=\(targetItem.logString) -> targetItem not found in cache sections!")
                     }
                 }
             case .rightOfItem(let targetItem):
                 switch targetItem.info {
                 case .hiddenControlItem:
                     cache[.visible].insert(item, at: 0)
+                    Logger.itemManager.info("[UNCHECKED] .rightOf hiddenControlItem -> inserted at visible[0]")
                 case .alwaysHiddenControlItem:
                     cache[.hidden].insert(item, at: 0)
+                    Logger.itemManager.info("[UNCHECKED] .rightOf alwaysHiddenControlItem -> inserted at hidden[0]")
                 default:
                     if
                         let section = cache.section(for: targetItem),
@@ -302,31 +327,46 @@ extension MenuBarItemManager {
                     {
                         let clampedIndex = (index - 1).clamped(to: cache[section].startIndex...cache[section].endIndex)
                         cache[section].insert(item, at: clampedIndex)
+                        Logger.itemManager.info("[UNCHECKED] .rightOf targetItem=\(targetItem.logString) -> inserted into \(section) at \(clampedIndex)")
+                    } else {
+                        Logger.itemManager.info("[UNCHECKED] .rightOf targetItem=\(targetItem.logString) -> targetItem not found in cache sections!")
                     }
                 }
             }
         }
 
+        Logger.itemManager.info("[UNCHECKED] final cache: visible=\(cache[.visible].map(\.info)) hidden=\(cache[.hidden].map(\.info)) alwaysHidden=\(cache[.alwaysHidden].map(\.info))")
         itemCache = cache
     }
 
     /// Caches the current menu bar items if needed, ensuring that the control
     /// items are in the correct order.
-    func cacheItemsIfNeeded() async {
+    func cacheItemsIfNeeded(force: Bool = false) async {
+        let effectiveForce = force && tempShownItemContexts.isEmpty
         Logger.itemManager.info(
             """
             cacheItemsIfNeeded starting: \
+            requestedForce=\(force), \
+            effectiveForce=\(effectiveForce), \
+            tempContextCount=\(tempShownItemContexts.count), \
             cachedWindowCount=\(cachedItemWindowIDs.count), \
             cachedItemCount=\(itemCache.allItems.count)
             """
         )
+        if force && !effectiveForce {
+            Logger.itemManager.info("IceBarRenderDebug ignoring forced item cache refresh while temporary items are shown")
+        }
+        if !tempShownItemContexts.isEmpty, !itemCache.allItems.isEmpty {
+            Logger.itemManager.info("IceBarRenderDebug skipping item cache refresh while temporary items are shown")
+            return
+        }
         do {
             try await waitForItemsToStopMoving(timeout: .seconds(1))
         } catch is TaskTimeoutError {
             logSkippingCache(reason: "an item is currently being moved")
             return
         } catch {
-            guard !itemHasRecentlyMoved else {
+            guard effectiveForce || !itemHasRecentlyMoved else {
                 logSkippingCache(reason: "an item was recently moved")
                 return
             }
@@ -334,6 +374,7 @@ extension MenuBarItemManager {
 
         let itemWindowIDs = Bridging.getWindowList(option: [.menuBarItems, .activeSpace])
         if
+            !effectiveForce,
             cachedItemWindowIDs == itemWindowIDs,
             !itemCache.allItems.isEmpty
         {
@@ -342,6 +383,11 @@ extension MenuBarItemManager {
         }
 
         var items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        Logger.itemManager.info(
+            """
+            [CACHE] raw items retrieved: \(items.map { "\($0.info)[id=\($0.windowID) frame=\(NSStringFromRect($0.frame)) onScreen=\($0.isOnScreen)]" }.joined(separator: " | "))
+            """
+        )
         let alwaysHiddenSectionIsEnabled = appState?
             .menuBarManager
             .section(withName: .alwaysHidden)?
@@ -1354,16 +1400,69 @@ extension MenuBarItemManager {
 // MARK: - Temporarily Show Items
 
 extension MenuBarItemManager {
+    private func itemDebugDescription(_ item: MenuBarItem) -> String {
+        let currentFrame = Bridging.getWindowFrame(for: item.windowID).map { NSStringFromRect($0) } ?? "<nil>"
+        return "info=\(item.info), windowID=\(item.windowID), ownerPID=\(item.ownerPID), owner=\(item.ownerName ?? "<nil>"), title=\(item.title ?? "<nil>"), frame=\(NSStringFromRect(item.frame)), currentFrame=\(currentFrame), isOnScreen=\(item.isOnScreen), isMovable=\(item.isMovable)"
+    }
+
+    private func itemListDebugDescription(_ items: [MenuBarItem]) -> String {
+        items.prefix(20).map { item in
+            "\(item.info)[id=\(item.windowID), frame=\(NSStringFromRect(item.frame)), onScreen=\(item.isOnScreen)]"
+        }
+        .joined(separator: " | ")
+    }
+
     /// Gets the destination to return the given item to after it is temporarily shown.
     private func getReturnDestination(for item: MenuBarItem, in items: [MenuBarItem]) -> MoveDestination? {
-        if let index = items.firstIndex(where: { $0.windowID == item.windowID }) {
-            if items.indices.contains(index + 1) {
-                return .leftOfItem(items[index + 1])
-            } else if items.indices.contains(index - 1) {
-                return .rightOfItem(items[index - 1])
+        guard
+            let index = items.firstIndex(where: { $0.windowID == item.windowID })
+            ?? items.firstIndex(where: { $0.info == item.info })
+        else {
+            Logger.itemManager.info("[RETDEST] no index found for item=\(item.logString) windowID=\(item.windowID) info=\(item.info)")
+            return nil
+        }
+        Logger.itemManager.info("[RETDEST] scanning for item=\(item.logString) index=\(index) total=\(items.count) tempContexts=\(tempShownItemContexts.map(\.info))")
+        // Scan right for a neighbor that is not itself temp-shown
+        for i in items.indices where i > index {
+            let neighbor = items[i]
+            let isTemp = isTempShown(neighbor)
+            Logger.itemManager.info("[RETDEST] scanRight i=\(i) neighbor=\(neighbor.logString) windowID=\(neighbor.windowID) info=\(neighbor.info) isTempShown=\(isTemp)")
+            if !isTemp {
+                let dest = ".leftOf(\(neighbor.info))"
+                Logger.itemManager.info("[RETDEST] chosen right neighbor at i=\(i) -> \(dest)")
+                return .leftOfItem(neighbor)
             }
         }
+        // Scan left for a neighbor that is not itself temp-shown
+        for i in stride(from: index - 1, through: 0, by: -1) {
+            let neighbor = items[i]
+            let isTemp = isTempShown(neighbor)
+            Logger.itemManager.info("[RETDEST] scanLeft i=\(i) neighbor=\(neighbor.logString) windowID=\(neighbor.windowID) info=\(neighbor.info) isTempShown=\(isTemp)")
+            if !isTemp {
+                let dest = ".rightOf(\(neighbor.info))"
+                Logger.itemManager.info("[RETDEST] chosen left neighbor at i=\(i) -> \(dest)")
+                return .rightOfItem(neighbor)
+            }
+        }
+        Logger.itemManager.info("[RETDEST] no non-temp neighbor found for item=\(item.logString)")
         return nil
+    }
+
+    /// Checks whether the given item is currently temp-shown.
+    private func isTempShown(_ item: MenuBarItem) -> Bool {
+        tempShownItemContexts.contains(where: { $0.windowID == item.windowID })
+    }
+
+    private func getCachedReturnDestination(for item: MenuBarItem) -> MoveDestination? {
+        guard let section = itemCache.section(for: item) else {
+            Logger.itemManager.info("[CACHEDRET] no section found for item=\(item.logString)")
+            return nil
+        }
+        let items = itemCache[section]
+        Logger.itemManager.info("[CACHEDRET] section=\(section) item=\(item.logString) sectionItems=\(items.map { "\($0.info):\($0.windowID)" })")
+        let dest = getReturnDestination(for: item, in: items)
+        Logger.itemManager.info("[CACHEDRET] result=\(dest?.logString ?? "nil")")
+        return dest
     }
 
     /// Schedules a timer for the given interval, attempting to rehide the current
@@ -1394,6 +1493,7 @@ extension MenuBarItemManager {
 
     private func upsertTempShownItemContext(
         windowID: CGWindowID,
+        info: MenuBarItemInfo,
         returnDestination: MoveDestination,
         shownInterfaceWindow: WindowInfo?
     ) {
@@ -1401,10 +1501,29 @@ extension MenuBarItemManager {
         tempShownItemContexts.append(
             TempShownItemContext(
                 windowID: windowID,
+                info: info,
                 returnDestination: returnDestination,
                 shownInterfaceWindow: shownInterfaceWindow
             )
         )
+    }
+
+    private func currentItem(matching item: MenuBarItem, in items: [MenuBarItem]? = nil) -> MenuBarItem? {
+        let items = items ?? MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        return items.first { $0.windowID == item.windowID } ?? items.first { $0.info == item.info }
+    }
+
+    private func currentDestination(matching destination: MoveDestination, in items: [MenuBarItem]) -> MoveDestination {
+        switch destination {
+        case .leftOfItem(let targetItem):
+            let resolved = currentItem(matching: targetItem, in: items) ?? targetItem
+            Logger.itemManager.info("[CURDEST] .leftOfItem original=\(targetItem.logString) resolved=\(resolved.logString) resolvedFrame=\(NSStringFromRect(resolved.frame)) resolvedOnScreen=\(resolved.isOnScreen)")
+            return .leftOfItem(resolved)
+        case .rightOfItem(let targetItem):
+            let resolved = currentItem(matching: targetItem, in: items) ?? targetItem
+            Logger.itemManager.info("[CURDEST] .rightOfItem original=\(targetItem.logString) resolved=\(resolved.logString) resolvedFrame=\(NSStringFromRect(resolved.frame)) resolvedOnScreen=\(resolved.isOnScreen)")
+            return .rightOfItem(resolved)
+        }
     }
 
     /// Temporarily shows the given item.
@@ -1419,6 +1538,22 @@ extension MenuBarItemManager {
     ///     clicked once movement is finished.
     ///   - mouseButton: The mouse button of the click.
     func tempShowItem(_ item: MenuBarItem, clickWhenFinished: Bool, mouseButton: CGMouseButton) {
+        Logger.itemManager.info(
+            """
+            IceBarClickDebug tempShowItem requested: \
+            item=\(self.itemDebugDescription(item)), \
+            clickWhenFinished=\(clickWhenFinished), \
+            mouseButton=\(mouseButton.logString), \
+            tempContextCount=\(self.tempShownItemContexts.count), \
+            cachedWindowCount=\(self.cachedItemWindowIDs.count), \
+            cacheItems=\(self.itemCache.allItems.count), \
+            isMovingItem=\(self.isMovingItem), \
+            itemHasRecentlyMoved=\(self.itemHasRecentlyMoved), \
+            mouseHasRecentlyMoved=\(self.mouseHasRecentlyMoved), \
+            isMouseButtonDown=\(self.isMouseButtonDown)
+            """
+        )
+
         func menuBarBaselineY() -> CGFloat? {
             let ys = MenuBarItem.getMenuBarItems(onScreenOnly: true, activeSpaceOnly: true)
                 .map(\.frame.minY)
@@ -1429,8 +1564,11 @@ extension MenuBarItemManager {
             return ys[ys.count / 2]
         }
 
-        let latestItem = MenuBarItem(windowID: item.windowID)
-        let shouldHandleDirectly = latestItem?.isOnScreen == true
+        let latestItem = currentItem(matching: item)
+        let existingTempContext = latestItem.flatMap { latestItem in
+            tempShownItemContexts.first(where: { $0.windowID == latestItem.windowID })
+        }
+        let shouldHandleDirectly = latestItem?.isOnScreen == true && existingTempContext != nil
         let isInMenuBarInteractionRow: Bool = if
             let latestItem,
             let baselineY = menuBarBaselineY()
@@ -1440,33 +1578,46 @@ extension MenuBarItemManager {
             false
         }
 
+        Logger.itemManager.info(
+            """
+            IceBarClickDebug direct-check: \
+            latestItem=\(latestItem.map { self.itemDebugDescription($0) } ?? "<nil>"), \
+            hasExistingTempContext=\(existingTempContext != nil), \
+            shouldHandleDirectly=\(shouldHandleDirectly), \
+            isInMenuBarInteractionRow=\(isInMenuBarInteractionRow), \
+            baselineY=\(String(describing: menuBarBaselineY()))
+            """
+        )
+
         if shouldHandleDirectly && isInMenuBarInteractionRow {
+            Logger.itemManager.info("IceBarClickDebug using direct click path for \(latestItem?.logString ?? item.logString)")
             if clickWhenFinished, let latestItem {
                 Task {
                     let initialWindows = WindowInfo.getOnScreenWindows()
                     do {
                         try await click(item: latestItem, with: mouseButton)
                         if
-                            let existingContext = tempShownItemContexts.first(where: { $0.windowID == latestItem.windowID }),
+                            let existingContext = existingTempContext,
                             let appState
                         {
                             try await Task.sleep(for: .milliseconds(100))
                             upsertTempShownItemContext(
                                 windowID: latestItem.windowID,
+                                info: latestItem.info,
                                 returnDestination: existingContext.returnDestination,
                                 shownInterfaceWindow: shownInterfaceWindow(for: latestItem, excluding: initialWindows)
                             )
                             runTempShownItemTimer(for: appState.settingsManager.advancedSettingsManager.tempShowInterval)
                         }
                     } catch {
-                        Logger.itemManager.error("ERROR: \(error)")
+                        Logger.itemManager.error("IceBarClickDebug direct click failed: \(error)")
                     }
                 }
             }
             return
         } else if shouldHandleDirectly, let latestItem {
             Logger.itemManager.debug(
-                "\(latestItem.logString) is on-screen but outside menu bar interaction row (frame=\(NSStringFromRect(latestItem.frame)))"
+                "IceBarClickDebug \(latestItem.logString) is on-screen but outside menu bar interaction row (frame=\(NSStringFromRect(latestItem.frame)))"
             )
         }
 
@@ -1475,33 +1626,72 @@ extension MenuBarItemManager {
             let screen = NSScreen.main,
             let applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
         else {
-            Logger.itemManager.warning("No application menu frame, so not showing \(item.logString)")
+            Logger.itemManager.warning("IceBarClickDebug No application menu frame, so not showing \(item.logString)")
             return
         }
 
-        Logger.itemManager.info("Temporarily showing \(item.logString)")
+        Logger.itemManager.info("IceBarClickDebug Temporarily showing \(item.logString)")
 
         var items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        let itemToShow = currentItem(matching: item, in: items) ?? item
+        Logger.itemManager.info(
+            """
+            IceBarClickDebug scanned items before temp show: \
+            total=\(items.count), \
+            itemToShow=\(self.itemDebugDescription(itemToShow)), \
+            matchedByWindow=\(items.contains { $0.windowID == item.windowID }), \
+            matchedByInfo=\(items.contains { $0.info == item.info }), \
+            items=\(self.itemListDebugDescription(items))
+            """
+        )
         let hiddenControlFrame = items.first(where: { $0.info == .hiddenControlItem })?.frame ??
             appState.menuBarManager.section(withName: .hidden)?.controlItem.windowFrame ??
             appState.menuBarManager.section(withName: .hidden)?.controlItem.window?.frame
 
-        guard let destination = getReturnDestination(for: item, in: items) else {
-            Logger.itemManager.warning("No return destination for \(item.logString)")
+        let cachedDest = getCachedReturnDestination(for: itemToShow)
+        let freshDest = getReturnDestination(for: itemToShow, in: items)
+        Logger.itemManager.info(
+            """
+            IceBarClickDebug destination lookup: \
+            item=\(itemToShow.logString), \
+            cachedDest=\(cachedDest?.logString ?? "nil"), \
+            freshDest=\(freshDest?.logString ?? "nil"), \
+            tempContexts=\(self.tempShownItemContexts.map { "info=\($0.info) dest=\($0.returnDestination.logString)" })
+            """
+        )
+        guard let destination = cachedDest ?? freshDest else {
+            Logger.itemManager.warning(
+                """
+                IceBarClickDebug No return destination for \(itemToShow.logString): \
+                itemToShow=\(self.itemDebugDescription(itemToShow)), \
+                items=\(self.itemListDebugDescription(items))
+                """
+            )
             return
         }
 
         guard let hiddenControlFrame else {
-            Logger.itemManager.warning("No hidden control frame, so not showing \(item.logString)")
+            Logger.itemManager.warning("IceBarClickDebug No hidden control frame, so not showing \(item.logString)")
             return
         }
+
+        Logger.itemManager.info(
+            """
+            IceBarClickDebug placement context: \
+            hiddenControlFrame=\(NSStringFromRect(hiddenControlFrame)), \
+            destination=\(destination.logString), \
+            applicationMenuFrame=\(NSStringFromRect(applicationMenuFrame)), \
+            screen=\(screen.localizedName)
+            """
+        )
 
         // Keep only the items to the right of the hidden section divider.
         items = items.filter { $0.frame.minX >= hiddenControlFrame.maxX }
         // Remove all offscreen items.
         items.trimPrefix { !$0.isOnScreen }
         // Never target the same item when choosing where to temporarily place it.
-        items.removeAll { $0.windowID == item.windowID }
+        items.removeAll { $0.windowID == itemToShow.windowID }
+        items.removeAll { $0.info == itemToShow.info }
 
         let maxX = if let rightArea = screen.auxiliaryTopRightArea {
             max(rightArea.minX + 20, applicationMenuFrame.maxX)
@@ -1510,40 +1700,90 @@ extension MenuBarItemManager {
         }
 
         // Remove items until we have enough room to show this item.
-        items.trimPrefix { $0.frame.minX - item.frame.width <= maxX }
+        items.trimPrefix { $0.frame.minX - itemToShow.frame.width <= maxX }
 
         guard let targetItem = items.first else {
+            Logger.itemManager.warning(
+                """
+                IceBarClickDebug No target item available after trimming: \
+                maxX=\(maxX), \
+                itemWidth=\(itemToShow.frame.width), \
+                candidateItems=\(self.itemListDebugDescription(items))
+                """
+            )
             let alert = NSAlert()
-            alert.messageText = "Not enough room to show \"\(item.displayName)\""
+            alert.messageText = "Not enough room to show \"\(itemToShow.displayName)\""
             alert.runModal()
             return
         }
+
+        Logger.itemManager.info(
+            """
+            IceBarClickDebug selected target: \
+            target=\(self.itemDebugDescription(targetItem)), \
+            maxX=\(maxX), \
+            remainingCandidates=\(items.count)
+            """
+        )
 
         let initialWindows = WindowInfo.getOnScreenWindows()
 
         Task {
             if clickWhenFinished {
                 do {
-                    try await move(item: item, to: .leftOfItem(targetItem))
+                    Logger.itemManager.info(
+                        """
+                        IceBarClickDebug move+click starting: \
+                        item=\(self.itemDebugDescription(itemToShow)), \
+                        target=\(self.itemDebugDescription(targetItem))
+                        """
+                    )
+                    try await move(item: itemToShow, to: .leftOfItem(targetItem))
+                    Logger.itemManager.info(
+                        """
+                        IceBarClickDebug move finished: \
+                        item=\(self.itemDebugDescription(itemToShow)), \
+                        refreshed=\(self.currentItem(matching: itemToShow).map { self.itemDebugDescription($0) } ?? "<nil>")
+                        """
+                    )
                     try await Task.sleep(for: .milliseconds(75))
-                    try await click(item: MenuBarItem(windowID: item.windowID) ?? item, with: mouseButton)
+                    try await click(item: currentItem(matching: itemToShow) ?? itemToShow, with: mouseButton)
+                    Logger.itemManager.info("IceBarClickDebug click after move finished for \(itemToShow.logString)")
                 } catch {
-                    Logger.itemManager.error("ERROR: \(error)")
+                    Logger.itemManager.error("IceBarClickDebug move+click failed: \(error)")
                 }
             } else {
                 do {
-                    try await move(item: item, to: .leftOfItem(targetItem))
+                    Logger.itemManager.info(
+                        """
+                        IceBarClickDebug move-only starting: \
+                        item=\(self.itemDebugDescription(itemToShow)), \
+                        target=\(self.itemDebugDescription(targetItem))
+                        """
+                    )
+                    try await move(item: itemToShow, to: .leftOfItem(targetItem))
+                    Logger.itemManager.info("IceBarClickDebug move-only finished for \(itemToShow.logString)")
                 } catch {
-                    Logger.itemManager.error("ERROR: \(error)")
+                    Logger.itemManager.error("IceBarClickDebug move-only failed: \(error)")
                 }
             }
 
             try? await Task.sleep(for: .milliseconds(100))
 
             upsertTempShownItemContext(
-                windowID: item.windowID,
+                windowID: itemToShow.windowID,
+                info: itemToShow.info,
                 returnDestination: destination,
-                shownInterfaceWindow: shownInterfaceWindow(for: item, excluding: initialWindows)
+                shownInterfaceWindow: shownInterfaceWindow(for: itemToShow, excluding: initialWindows)
+            )
+            Logger.itemManager.info(
+                """
+                IceBarClickDebug temp context upserted: \
+                item=\(itemToShow.logString), \
+                windowID=\(itemToShow.windowID), \
+                destination=\(destination.logString), \
+                tempContextCount=\(self.tempShownItemContexts.count)
+                """
             )
             runTempShownItemTimer(for: appState.settingsManager.advancedSettingsManager.tempShowInterval)
         }
@@ -1560,25 +1800,32 @@ extension MenuBarItemManager {
         }
 
         guard !tempShownItemContexts.isEmpty else {
+            Logger.itemManager.info("IceBarClickDebug rehide skipped because there are no temp contexts")
             return
         }
 
         guard !isMouseButtonDown else {
-            Logger.itemManager.debug("Mouse button is down, so waiting to rehide")
+            Logger.itemManager.debug("IceBarClickDebug Mouse button is down, so waiting to rehide")
             runTempShownItemTimer(for: 3)
             return
         }
         guard !tempShownItemContexts.contains(where: { $0.isShowingInterface }) else {
-            Logger.itemManager.debug("Menu bar item interface is shown, so waiting to rehide")
+            Logger.itemManager.debug("IceBarClickDebug Menu bar item interface is shown, so waiting to rehide")
             runTempShownItemTimer(for: 3)
             return
         }
 
-        Logger.itemManager.info("Rehiding temporarily shown items")
+        Logger.itemManager.info(
+            """
+            IceBarClickDebug Rehiding temporarily shown items: \
+            tempContextCount=\(tempShownItemContexts.count), \
+            contexts=\(tempShownItemContexts.map { "info=\($0.info), windowID=\($0.windowID), destination=\($0.returnDestination.logString)" }.joined(separator: " | "))
+            """
+        )
 
+        let contexts = tempShownItemContexts
+        tempShownItemContexts.removeAll()
         var failedContexts = [TempShownItemContext]()
-
-        let items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
 
         MouseCursor.hide()
 
@@ -1586,24 +1833,61 @@ extension MenuBarItemManager {
             MouseCursor.show()
         }
 
-        while let context = tempShownItemContexts.popLast() {
-            guard let item = items.first(where: { $0.windowID == context.windowID }) else {
+        Logger.itemManager.info("[REHIDE] contexts before processing (will reverse): \(contexts.map { "info=\($0.info) windowID=\($0.windowID) dest=\($0.returnDestination.logString)" }.joined(separator: " | "))")
+
+        for context in contexts.reversed() {
+            let items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+            Logger.itemManager.info(
+                """
+                IceBarClickDebug rehide scanned items for context: \
+                contextInfo=\(context.info), \
+                contextWindowID=\(context.windowID), \
+                total=\(items.count), \
+                items=\(self.itemListDebugDescription(items))
+                """
+            )
+            guard let item = items.first(where: { $0.windowID == context.windowID }) ?? items.first(where: { $0.info == context.info }) else {
+                Logger.itemManager.warning(
+                    """
+                    IceBarClickDebug rehide could not find item for context: \
+                    info=\(context.info), \
+                    windowID=\(context.windowID)
+                    """
+                )
+                failedContexts.append(context)
                 continue
             }
+            let destination = currentDestination(matching: context.returnDestination, in: items)
+            Logger.itemManager.info(
+                """
+                [REHIDE] processing context: \
+                contextInfo=\(context.info) contextWindowID=\(context.windowID) \
+                originalDest=\(context.returnDestination.logString) \
+                resolvedDest=\(destination.logString) \
+                itemFound=\(item.logString) itemFrame=\(NSStringFromRect(item.frame)) itemOnScreen=\(item.isOnScreen) \
+                currentTempContexts=\(self.tempShownItemContexts.map { "info=\($0.info) windowID=\($0.windowID)" })
+                """
+            )
             do {
-                try await move(item: item, to: context.returnDestination)
+                try await move(item: item, to: destination)
+                Logger.itemManager.info("[REHIDE] move succeeded for context=\(context.info) item=\(item.logString)")
+                try? await Task.sleep(for: .milliseconds(75))
             } catch {
-                Logger.itemManager.error("Failed to rehide \(item.logString) (error: \(error))")
+                Logger.itemManager.error("[REHIDE] move FAILED for context=\(context.info) item=\(item.logString) error=\(error)")
                 failedContexts.append(context)
             }
         }
 
+        Logger.itemManager.info("[REHIDE] loop done: failed=\(failedContexts.count) remainingTempContexts=\(self.tempShownItemContexts.count)")
+
         if failedContexts.isEmpty {
             tempShownItemsTimer?.invalidate()
             tempShownItemsTimer = nil
+            cachedItemWindowIDs.removeAll()
+            Logger.itemManager.info("IceBarClickDebug rehide finished successfully; invalidated cachedItemWindowIDs")
         } else {
             tempShownItemContexts = failedContexts
-            Logger.itemManager.warning("Some items failed to rehide")
+            Logger.itemManager.warning("IceBarClickDebug Some items failed to rehide; failedContextCount=\(failedContexts.count)")
             runTempShownItemTimer(for: 3)
         }
     }

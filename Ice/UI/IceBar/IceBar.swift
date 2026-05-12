@@ -163,20 +163,99 @@ final class IceBarPanel: NSPanel {
         return nil
     }
 
+    private func debugItemList(_ items: [MenuBarItem]) -> String {
+        items.map { item in
+            "\(item.info)[id=\(item.windowID), frame=\(NSStringFromRect(item.frame)), onScreen=\(item.isOnScreen), movable=\(item.isMovable)]"
+        }
+        .joined(separator: " | ")
+    }
+
     func show(section: MenuBarSection.Name, on screen: NSScreen) async {
         guard let appState else {
             return
         }
 
+        Logger.iceBar.info(
+            """
+            IceBarRenderDebug show requested: \
+            section=\(section.logString), \
+            screen=\(screen.localizedName), \
+            frame=\(NSStringFromRect(frame)), \
+            cachedImages=\(appState.imageCache.images.count)
+            """
+        )
+
         // Important that we set the navigation state and current section before updating the cache.
         appState.navigationState.isIceBarPresented = true
         currentSection = section
 
-        await appState.itemManager.cacheItemsIfNeeded()
+        Logger.iceBar.info(
+            """
+            IceBarDebug panel will cache items: \
+            section=\(section.logString), \
+            tempContextCount=\(appState.itemManager.tempShownItemCount)
+            """
+        )
+
+        await appState.itemManager.cacheItemsIfNeeded(force: true)
+
+        let visibleItems = appState.itemManager.itemCache.managedItems(for: .visible)
+        let hiddenItems = appState.itemManager.itemCache.managedItems(for: .hidden)
+        let alwaysHiddenItems = appState.itemManager.itemCache.managedItems(for: .alwaysHidden)
+        let sectionItems = appState.itemManager.itemCache.managedItems(for: section)
+
+        Logger.iceBar.info(
+            """
+            IceBarDebug panel cache result: \
+            section=\(section.logString), \
+            visible=\(visibleItems.map(\.info)), \
+            hidden=\(hiddenItems.map(\.info)), \
+            alwaysHidden=\(alwaysHiddenItems.map(\.info)), \
+            sectionItems=\(sectionItems.map(\.info)), \
+            cacheState=\(appState.itemManager.itemCache.sectionStatesDescription)
+            """
+        )
+        Logger.iceBar.info(
+            """
+            IceBarRenderDebug cache after force refresh: \
+            visible=\(visibleItems.count), \
+            hidden=\(hiddenItems.count), \
+            alwaysHidden=\(alwaysHiddenItems.count), \
+            requestedSectionCount=\(sectionItems.count), \
+            requestedSectionItems=\(debugItemList(sectionItems))
+            """
+        )
 
         if ScreenCapture.cachedCheckPermissions() {
+            Logger.iceBar.info(
+                """
+                IceBarRenderDebug image cache update starting: \
+                beforeImageCount=\(appState.imageCache.images.count), \
+                requestedSectionIDs=\(sectionItems.map(\.windowID))
+                """
+            )
             await appState.imageCache.updateCache()
+            Logger.iceBar.info(
+                """
+                IceBarRenderDebug image cache update finished: \
+                afterImageCount=\(appState.imageCache.images.count), \
+                requestedSectionCachedIDs=\(sectionItems.map(\.windowID).filter { appState.imageCache.images[$0] != nil }), \
+                requestedSectionMissingIDs=\(sectionItems.map(\.windowID).filter { appState.imageCache.images[$0] == nil })
+                """
+            )
+        } else {
+            Logger.iceBar.warning("IceBarRenderDebug image cache update skipped because screen capture permission is missing")
         }
+
+        Logger.iceBar.info(
+            """
+            IceBarDebug creating hosting view: \
+            section=\(section.logString), \
+            visibleItems=\(visibleItems.map(\.info)), \
+            hiddenItems=\(hiddenItems.map(\.info)), \
+            alwaysHiddenItems=\(alwaysHiddenItems.map(\.info))
+            """
+        )
 
         contentView = IceBarHostingView(appState: appState, colorManager: colorManager, screen: screen, section: section) { [weak self] in
             self?.close()
@@ -260,6 +339,13 @@ private struct IceBarContentView: View {
         itemManager.itemCache.managedItems(for: section)
     }
 
+    private var debugItemsDescription: String {
+        items.map { item in
+            "\(item.info)[id=\(item.windowID), image=\(imageCache.images[item.windowID] != nil), frame=\(NSStringFromRect(item.frame)), onScreen=\(item.isOnScreen)]"
+        }
+        .joined(separator: " | ")
+    }
+
     private var configuration: MenuBarAppearanceConfigurationV2 {
         appState.appearanceManager.configuration
     }
@@ -339,9 +425,29 @@ private struct IceBarContentView: View {
             Text("Ice cannot display menu bar items for automatically hidden menu bars")
                 .padding(.horizontal, 10)
         } else if imageCache.cacheFailed(for: section) {
+            let _ = Logger.iceBar.warning(
+                """
+                IceBarRenderDebug cacheFailed branch: \
+                section=\(section.logString), \
+                itemCount=\(items.count), \
+                imageCount=\(imageCache.images.count), \
+                items=\(debugItemsDescription)
+                """
+            )
             Text("Unable to display menu bar items")
                 .padding(.horizontal, 10)
         } else {
+            let _ = Logger.iceBar.info(
+                """
+                IceBarRenderDebug rendering scroll view: \
+                section=\(section.logString), \
+                itemCount=\(items.count), \
+                imageCount=\(imageCache.images.count), \
+                panelFrame=\(NSStringFromRect(frame)), \
+                contentHeight=\(String(describing: contentHeight)), \
+                items=\(debugItemsDescription)
+                """
+            )
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
                     ForEach(items, id: \.windowID) { item in
@@ -370,12 +476,27 @@ private struct IceBarItemView: View {
 
     private var leftClickAction: () -> Void {
         return { [weak itemManager] in
+            Logger.iceBar.info(
+                """
+                IceBarClickDebug left click received: \
+                item=\(item.logString), \
+                info=\(item.info), \
+                windowID=\(item.windowID), \
+                ownerPID=\(item.ownerPID), \
+                frame=\(NSStringFromRect(item.frame)), \
+                isOnScreen=\(item.isOnScreen), \
+                isMovable=\(item.isMovable), \
+                imageCached=\(imageCache.images[item.windowID] != nil)
+                """
+            )
             guard let itemManager else {
+                Logger.iceBar.warning("IceBarClickDebug left click ignored because itemManager is nil")
                 return
             }
             closePanel()
             Task {
                 try await Task.sleep(for: .milliseconds(25))
+                Logger.iceBar.info("IceBarClickDebug left click dispatching tempShowItem for \(item.logString), windowID=\(item.windowID), info=\(item.info)")
                 itemManager.tempShowItem(item, clickWhenFinished: true, mouseButton: .left)
             }
         }
@@ -383,12 +504,27 @@ private struct IceBarItemView: View {
 
     private var rightClickAction: () -> Void {
         return { [weak itemManager] in
+            Logger.iceBar.info(
+                """
+                IceBarClickDebug right click received: \
+                item=\(item.logString), \
+                info=\(item.info), \
+                windowID=\(item.windowID), \
+                ownerPID=\(item.ownerPID), \
+                frame=\(NSStringFromRect(item.frame)), \
+                isOnScreen=\(item.isOnScreen), \
+                isMovable=\(item.isMovable), \
+                imageCached=\(imageCache.images[item.windowID] != nil)
+                """
+            )
             guard let itemManager else {
+                Logger.iceBar.warning("IceBarClickDebug right click ignored because itemManager is nil")
                 return
             }
             closePanel()
             Task {
                 try await Task.sleep(for: .milliseconds(25))
+                Logger.iceBar.info("IceBarClickDebug right click dispatching tempShowItem for \(item.logString), windowID=\(item.windowID), info=\(item.info)")
                 itemManager.tempShowItem(item, clickWhenFinished: true, mouseButton: .right)
             }
         }
@@ -399,6 +535,16 @@ private struct IceBarItemView: View {
             let image = imageCache.images[item.windowID],
             let screen = imageCache.screen
         else {
+            Logger.iceBar.warning(
+                """
+                IceBarRenderDebug item image missing: \
+                item=\(item.logString), \
+                windowID=\(item.windowID), \
+                imageCached=\(imageCache.images[item.windowID] != nil), \
+                hasScreen=\(imageCache.screen != nil), \
+                knownImageIDs=\(Array(imageCache.images.keys).sorted())
+                """
+            )
             return nil
         }
         let size = CGSize(
@@ -410,6 +556,14 @@ private struct IceBarItemView: View {
 
     var body: some View {
         if let image {
+            let _ = Logger.iceBar.info(
+                """
+                IceBarRenderDebug rendering item image: \
+                item=\(item.logString), \
+                windowID=\(item.windowID), \
+                size=\(NSStringFromSize(image.size))
+                """
+            )
             Image(nsImage: image)
                 .contentShape(Rectangle())
                 .overlay {
@@ -499,4 +653,10 @@ private struct IceBarItemClickView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) { }
+}
+
+// MARK: - Logger
+
+private extension Logger {
+    static let iceBar = Logger(category: "IceBar")
 }

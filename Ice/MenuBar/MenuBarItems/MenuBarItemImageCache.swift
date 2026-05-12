@@ -105,6 +105,14 @@ final class MenuBarItemImageCache: ObservableObject {
         }
 
         let items = await appState.itemManager.itemCache[section]
+        Logger.imageCache.info(
+            """
+            IceBarRenderDebug createImages starting: \
+            section=\(section.logString), \
+            itemCount=\(items.count), \
+            items=\(items.map { "\($0.info)[id=\($0.windowID), frame=\(NSStringFromRect($0.frame)), onScreen=\($0.isOnScreen)]" }.joined(separator: " | "))
+            """
+        )
 
         var images = [CGWindowID: CGImage]()
         let backingScaleFactor = screen.backingScaleFactor
@@ -123,6 +131,17 @@ final class MenuBarItemImageCache: ObservableObject {
                 let itemFrame = item.isOnScreen ? item.frame : Bridging.getWindowFrame(for: windowID),
                 itemFrame.minY == displayBounds.minY
             else {
+                Logger.imageCache.warning(
+                    """
+                    IceBarRenderDebug createImages skipped item: \
+                    item=\(item.info), \
+                    windowID=\(windowID), \
+                    isOnScreen=\(item.isOnScreen), \
+                    frame=\(NSStringFromRect(item.frame)), \
+                    currentFrame=\(Bridging.getWindowFrame(for: windowID).map { NSStringFromRect($0) } ?? "<nil>"), \
+                    displayMinY=\(displayBounds.minY)
+                    """
+                )
                 continue
             }
             itemFrames[windowID] = itemFrame
@@ -134,6 +153,15 @@ final class MenuBarItemImageCache: ObservableObject {
             let compositeImage = ScreenCapture.captureWindows(windowIDs, option: option),
             CGFloat(compositeImage.width) == frame.width * backingScaleFactor
         {
+            Logger.imageCache.info(
+                """
+                IceBarRenderDebug composite capture succeeded: \
+                section=\(section.logString), \
+                windowIDs=\(windowIDs), \
+                unionFrame=\(NSStringFromRect(frame)), \
+                compositeSize=\(compositeImage.width)x\(compositeImage.height)
+                """
+            )
             for windowID in windowIDs {
                 guard
                     let itemFrame = itemFrames[windowID]
@@ -155,7 +183,14 @@ final class MenuBarItemImageCache: ObservableObject {
                 images[windowID] = itemImage
             }
         } else {
-            Logger.imageCache.warning("Composite image capture failed. Attempting to capturing items individually.")
+            Logger.imageCache.warning(
+                """
+                IceBarRenderDebug composite capture failed; attempting individual capture: \
+                section=\(section.logString), \
+                windowIDs=\(windowIDs), \
+                unionFrame=\(NSStringFromRect(frame))
+                """
+            )
 
             for windowID in windowIDs {
                 guard
@@ -175,6 +210,7 @@ final class MenuBarItemImageCache: ObservableObject {
                     let itemImage = ScreenCapture.captureWindow(windowID, option: option),
                     let croppedImage = itemImage.cropping(to: frame)
                 else {
+                    Logger.imageCache.warning("IceBarRenderDebug individual capture failed for windowID=\(windowID)")
                     continue
                 }
 
@@ -182,6 +218,14 @@ final class MenuBarItemImageCache: ObservableObject {
             }
         }
 
+        Logger.imageCache.info(
+            """
+            IceBarRenderDebug createImages finished: \
+            section=\(section.logString), \
+            requestedWindowIDs=\(windowIDs), \
+            imageIDs=\(Array(images.keys).sorted())
+            """
+        )
         return images
     }
 
@@ -202,7 +246,7 @@ final class MenuBarItemImageCache: ObservableObject {
             }
             let sectionImages = await createImages(for: section, screen: screen)
             guard !sectionImages.isEmpty else {
-                Logger.imageCache.warning("Update image cache failed for \(section.logString)")
+                Logger.imageCache.warning("IceBarRenderDebug Update image cache failed for \(section.logString)")
                 continue
             }
             newImages.merge(sectionImages) { (_, new) in new }
@@ -242,11 +286,13 @@ final class MenuBarItemImageCache: ObservableObject {
 
         guard await !appState.itemManager.isMovingItem else {
             logSkippingCache(reason: "an item is currently being moved")
+            Logger.imageCache.info("IceBarRenderDebug image cache skipped because item manager is moving")
             return
         }
 
         guard await !appState.itemManager.itemHasRecentlyMoved else {
             logSkippingCache(reason: "an item was recently moved")
+            Logger.imageCache.info("IceBarRenderDebug image cache skipped because item recently moved")
             return
         }
 
