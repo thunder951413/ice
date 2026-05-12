@@ -425,7 +425,7 @@ private struct IceBarContentView: View {
             Text("Ice cannot display menu bar items for automatically hidden menu bars")
                 .padding(.horizontal, 10)
         } else if imageCache.cacheFailed(for: section) {
-            let _ = Logger.iceBar.warning(
+            _ = Logger.iceBar.warning(
                 """
                 IceBarRenderDebug cacheFailed branch: \
                 section=\(section.logString), \
@@ -437,7 +437,7 @@ private struct IceBarContentView: View {
             Text("Unable to display menu bar items")
                 .padding(.horizontal, 10)
         } else {
-            let _ = Logger.iceBar.info(
+            _ = Logger.iceBar.info(
                 """
                 IceBarRenderDebug rendering scroll view: \
                 section=\(section.logString), \
@@ -556,7 +556,7 @@ private struct IceBarItemView: View {
 
     var body: some View {
         if let image {
-            let _ = Logger.iceBar.info(
+            _ = Logger.iceBar.info(
                 """
                 IceBarRenderDebug rendering item image: \
                 item=\(item.logString), \
