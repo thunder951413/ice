@@ -67,7 +67,15 @@ final class IceBarPanel: NSPanel {
                         // Only continue if the menu bar is automatically hidden, as Ice
                         // can't currently display its menu bar items.
                         appState.menuBarManager.isMenuBarHiddenBySystemUserDefaults,
-                        let info = window.flatMap({ WindowInfo(windowID: CGWindowID($0.windowNumber)) }),
+                        let info = window.flatMap({ window -> WindowInfo? in
+                            guard
+                                window.windowNumber > 0,
+                                let windowID = CGWindowID(exactly: window.windowNumber)
+                            else {
+                                return nil
+                            }
+                            return WindowInfo(windowID: windowID)
+                        }),
                         // Window being offscreen means the menu bar is currently hidden.
                         // Close the bar, as things will start to look weird if we don't.
                         !info.isOnScreen
@@ -135,12 +143,15 @@ final class IceBarPanel: NSPanel {
 
                 guard
                     lowerBound <= upperBound,
-                    let section = appState.menuBarManager.section(withName: .visible),
-                    let windowID = section.controlItem.windowID,
-                    // Bridging.getWindowFrame is more reliable than ControlItem.windowFrame,
-                    // i.e. if the control item is offscreen.
-                    let itemFrame = Bridging.getWindowFrame(for: windowID)
+                    let section = appState.menuBarManager.section(withName: .visible)
                 else {
+                    return originForRightOfScreen
+                }
+
+                let itemFrame = section.controlItem.windowID
+                    .flatMap(Bridging.getWindowFrame)
+                    ?? section.controlItem.windowFrame
+                guard let itemFrame else {
                     return originForRightOfScreen
                 }
 
@@ -155,16 +166,11 @@ final class IceBarPanel: NSPanel {
         guard let appState else {
             return
         }
+        Logger.iceBar.info("Showing \(section.logString) with \(appState.itemManager.itemCache[section].count) cached items")
 
         // Important that we set the navigation state and current section before updating the cache.
         appState.navigationState.isIceBarPresented = true
         currentSection = section
-
-        await appState.itemManager.cacheItemsIfNeeded()
-
-        if ScreenCapture.cachedCheckPermissions() {
-            await appState.imageCache.updateCache()
-        }
 
         contentView = IceBarHostingView(appState: appState, colorManager: colorManager, screen: screen, section: section) { [weak self] in
             self?.close()
@@ -179,6 +185,14 @@ final class IceBarPanel: NSPanel {
         colorManager.updateAllProperties(with: frame, screen: screen)
 
         orderFrontRegardless()
+
+        // Do not block presentation on AX enumeration and shared-window screen
+        // capture. The current logical cache is immediately usable, and the
+        // panel updates reactively when the background refresh completes.
+        Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            await appState.itemManager.cacheItemsIfNeeded()
+        }
     }
 
     override func close() {
@@ -308,31 +322,13 @@ private struct IceBarContentView: View {
 
     @ViewBuilder
     private var content: some View {
-        if !ScreenCapture.cachedCheckPermissions() {
-            HStack {
-                Text("The Ice Bar requires screen recording permissions.")
-
-                Button {
-                    closePanel()
-                    appState.navigationState.settingsNavigationIdentifier = .advanced
-                    appState.appDelegate?.openSettingsWindow()
-                } label: {
-                    Text("Open Ice Settings")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.link)
-            }
-            .padding(.horizontal, 10)
-        } else if menuBarManager.isMenuBarHiddenBySystemUserDefaults {
+        if menuBarManager.isMenuBarHiddenBySystemUserDefaults {
             Text("Ice cannot display menu bar items for automatically hidden menu bars")
-                .padding(.horizontal, 10)
-        } else if imageCache.cacheFailed(for: section) {
-            Text("Unable to display menu bar items")
                 .padding(.horizontal, 10)
         } else {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(items, id: \.windowID) { item in
+                    ForEach(items, id: \.stableID) { item in
                         IceBarItemView(item: item, closePanel: closePanel)
                     }
                 }
@@ -384,7 +380,7 @@ private struct IceBarItemView: View {
 
     private var image: NSImage? {
         guard
-            let image = imageCache.images[item.info],
+            let image = imageCache.images[item.stableID],
             let screen = imageCache.screen
         else {
             return nil
@@ -397,16 +393,24 @@ private struct IceBarItemView: View {
     }
 
     var body: some View {
-        if let image {
-            Image(nsImage: image)
-                .contentShape(Rectangle())
-                .overlay {
-                    IceBarItemClickView(item: item, leftClickAction: leftClickAction, rightClickAction: rightClickAction)
-                }
-                .accessibilityLabel(item.displayName)
-                .accessibilityAction(named: "left click", leftClickAction)
-                .accessibilityAction(named: "right click", rightClickAction)
+        Group {
+            if let image {
+                Image(nsImage: image)
+            } else {
+                Text(item.displayName)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .frame(height: NSStatusBar.system.thickness)
+            }
         }
+        .contentShape(Rectangle())
+        .overlay {
+            IceBarItemClickView(item: item, leftClickAction: leftClickAction, rightClickAction: rightClickAction)
+        }
+        .accessibilityLabel(item.displayName)
+        .accessibilityAction(named: "left click", leftClickAction)
+        .accessibilityAction(named: "right click", rightClickAction)
     }
 }
 
@@ -487,4 +491,8 @@ private struct IceBarItemClickView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) { }
+}
+
+private extension Logger {
+    static let iceBar = Logger(category: "IceBar")
 }

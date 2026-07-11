@@ -112,6 +112,7 @@ final class MenuBarSection {
         self.name = name
         self.controlItem = controlItem
         self.appState = appState
+        controlItem.attach(to: self)
     }
 
     /// Creates a section with the given name and app state.
@@ -129,6 +130,7 @@ final class MenuBarSection {
 
     /// Shows the section.
     func show() {
+        Logger.menuBarSection.info("Showing \(name.logString), useIceBar=\(useIceBar), isHidden=\(isHidden)")
         guard
             let appState,
             isHidden
@@ -190,6 +192,7 @@ final class MenuBarSection {
 
     /// Hides the section.
     func hide() {
+        Logger.menuBarSection.info("Hiding \(name.logString), useIceBar=\(useIceBar), isHidden=\(isHidden)")
         guard
             let appState,
             !isHidden

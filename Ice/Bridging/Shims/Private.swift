@@ -4,6 +4,7 @@
 //
 
 import CoreGraphics
+import ApplicationServices
 
 // MARK: - Bridged Types
 
@@ -127,3 +128,13 @@ func CGSGetScreenRectForWindow(
     _ wid: CGWindowID,
     _ outRect: inout CGRect
 ) -> CGError
+
+/// Returns the WindowServer identifier associated with an accessibility element.
+///
+/// This is private API, but unlike inventing synthetic identifiers it preserves the
+/// identity expected by CGEvent and CoreGraphics when the system exposes one.
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(
+    _ element: AXUIElement,
+    _ outWindowID: inout CGWindowID
+) -> AXError

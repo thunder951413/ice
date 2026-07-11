@@ -54,7 +54,7 @@ final class MenuBarItemManager: ObservableObject {
 
         /// Returns the name of the section for the given menu bar item.
         func section(for item: MenuBarItem) -> MenuBarSection.Name? {
-            for (section, items) in self.items where items.contains(where: { $0.info == item.info }) {
+            for (section, items) in self.items where items.contains(where: { $0.stableID == item.stableID }) {
                 return section
             }
             return nil
@@ -69,6 +69,9 @@ final class MenuBarItemManager: ObservableObject {
 
     /// Context for a temporarily shown menu bar item.
     private struct TempShownItemContext {
+        /// Stable identity of the item.
+        let stableID: String
+
         /// The information associated with the item.
         let info: MenuBarItemInfo
 
@@ -103,8 +106,22 @@ final class MenuBarItemManager: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
-    /// Cached window identifiers for the most recent items.
-    private var cachedItemWindowIDs = [CGWindowID]()
+    /// Stable identities and geometry for the most recent successful cache.
+    private var cachedItemSignatures = [String]()
+
+    /// Logical section assignments for hosted items. Hidden hosted items can
+    /// disappear from AX entirely, so their section cannot be reconstructed
+    /// from each enumeration alone.
+    private var hostedSectionAssignments = [String: MenuBarSection.Name]()
+
+    /// Last known descriptors for hosted items, including currently hidden ones.
+    private var hostedItemSnapshots = [String: MenuBarItem]()
+
+    /// Whether the initial hosted layout has been captured with sections shown.
+    private var hasWarmedHostedCache = false
+
+    /// Prevents timer-driven cache refreshes during the hosted warmup.
+    private var isWarmingHostedCache = false
 
     /// Context values for the current temporarily shown items.
     private var tempShownItemContexts = [TempShownItemContext]()
@@ -229,7 +246,7 @@ final class MenuBarItemManager: ObservableObject {
 extension MenuBarItemManager {
     /// Logs a warning that the given menu bar item was not added to the cache.
     private func logNotCachedWarning(for item: MenuBarItem) {
-        Logger.itemManager.warning("\(item.logString) was not cached")
+        Logger.itemManager.warning("\(item.logString) at \(NSStringFromRect(item.frame)) was not cached")
     }
 
     /// Logs a reason for skipping the cache.
@@ -250,12 +267,49 @@ extension MenuBarItemManager {
             hiddenControlItem: hiddenControlItem,
             alwaysHiddenControlItem: alwaysHiddenControlItem
         )
+        Logger.itemManager.debug(
+            "Section delimiters: hidden=\(NSStringFromRect(hiddenControlItem.frame)), " +
+            "alwaysHidden=\(alwaysHiddenControlItem.map { NSStringFromRect($0.frame) } ?? "<disabled>")"
+        )
 
         var cache = ItemCache()
         var tempShownItems = [(MenuBarItem, MoveDestination)]()
 
+        let screenWidth = NSScreen.screens.map(\.frame.width).max() ?? 0
+        let hiddenFrame = hiddenControlItem.frame
+        let hasUsableDelimiterGeometry = hiddenFrame.width <= screenWidth
+            && NSScreen.screens.contains { $0.frame.insetBy(dx: -100, dy: -100).intersects(hiddenFrame) }
+        if !hasUsableDelimiterGeometry {
+            // Hosted status items can report the expanded divider as a wrapped,
+            // multi-screen-width rectangle. Geometry comparisons against that
+            // rectangle classify every real item outside all sections. Preserve
+            // useful layout data by separating visible and offscreen items.
+            Logger.itemManager.warning("Hosted control-item geometry is invalid; using visibility-based sections")
+            for item in otherItems where item.hostedHandle != nil {
+                hostedItemSnapshots[item.stableID] = item
+                if hostedSectionAssignments[item.stableID] == nil {
+                    hostedSectionAssignments[item.stableID] = item.isOnScreen ? .visible : .hidden
+                }
+            }
+            hostedItemSnapshots = hostedItemSnapshots.filter { _, item in
+                item.owningApplication != nil
+            }
+            for (stableID, item) in hostedItemSnapshots {
+                let section = hostedSectionAssignments[stableID] ?? (item.isOnScreen ? .visible : .hidden)
+                cache[section].append(item)
+            }
+            for section in MenuBarSection.Name.allCases {
+                cache[section] = cache[section].sortedByOrderInMenuBar()
+            }
+            itemCache = cache
+            return
+        }
+
         for item in otherItems {
-            if let context = tempShownItemContexts.first(where: { $0.info == item.info }) {
+            if item.hostedHandle != nil, !item.isOnScreen {
+                let section = hostedSectionAssignments[item.stableID] ?? .hidden
+                cache[section].append(item)
+            } else if let context = tempShownItemContexts.first(where: { $0.stableID == item.stableID }) {
                 // Keep track of temporarily shown items and their return destinations separately.
                 // We want to cache them as if they were in their original locations. Once all other
                 // items are cached, use the return destinations to insert the items into the cache
@@ -283,7 +337,7 @@ extension MenuBarItemManager {
                 default:
                     if
                         let section = cache.section(for: targetItem),
-                        let index = cache[section].firstIndex(matching: targetItem.info)
+                        let index = cache[section].firstIndex(where: { $0.stableID == targetItem.stableID })
                     {
                         let clampedIndex = index.clamped(to: cache[section].startIndex...cache[section].endIndex)
                         cache[section].insert(item, at: clampedIndex)
@@ -298,7 +352,7 @@ extension MenuBarItemManager {
                 default:
                     if
                         let section = cache.section(for: targetItem),
-                        let index = cache[section].firstIndex(matching: targetItem.info)
+                        let index = cache[section].firstIndex(where: { $0.stableID == targetItem.stableID })
                     {
                         let clampedIndex = (index - 1).clamped(to: cache[section].startIndex...cache[section].endIndex)
                         cache[section].insert(item, at: clampedIndex)
@@ -307,12 +361,21 @@ extension MenuBarItemManager {
             }
         }
 
+        for section in MenuBarSection.Name.allCases {
+            for item in cache[section] where item.hostedHandle != nil {
+                hostedSectionAssignments[item.stableID] = section
+                hostedItemSnapshots[item.stableID] = item
+            }
+        }
         itemCache = cache
     }
 
     /// Caches the current menu bar items if needed, ensuring that the control
     /// items are in the correct order.
     func cacheItemsIfNeeded() async {
+        guard !isWarmingHostedCache else {
+            return
+        }
         do {
             try await waitForItemsToStopMoving(timeout: .seconds(1))
         } catch is TaskTimeoutError {
@@ -325,20 +388,69 @@ extension MenuBarItemManager {
             }
         }
 
-        let itemWindowIDs = Bridging.getWindowList(option: [.menuBarItems, .activeSpace])
-        if cachedItemWindowIDs == itemWindowIDs {
-            logSkippingCache(reason: "item windows have not changed")
+        var restoreControlStates: [(ControlItem, ControlItem.HidingState)]?
+        var items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        if
+            !hasWarmedHostedCache,
+            items.contains(where: { $0.hostedHandle != nil }),
+            let appState
+        {
+            hasWarmedHostedCache = true
+            isWarmingHostedCache = true
+            let controls = appState.menuBarManager.sections.map(\.controlItem)
+            restoreControlStates = controls.map { ($0, $0.state) }
+            controls.forEach { $0.state = .showItems }
+            try? await Task.sleep(for: .milliseconds(150))
+            items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+            isWarmingHostedCache = false
+        }
+        defer {
+            restoreControlStates?.forEach { control, state in
+                control.state = state
+            }
+        }
+        guard !items.isEmpty else {
+            logSkippingCache(reason: AXIsProcessTrusted() ? "no menu bar items were discovered" : "Accessibility permission is unavailable")
             return
-        } else {
-            cachedItemWindowIDs = itemWindowIDs
         }
 
-        var items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        let itemSignatures = items.map {
+            "\($0.stableID)|\(NSStringFromRect($0.frame))|\($0.isOnScreen)"
+        }
+        if !cachedItemSignatures.isEmpty, cachedItemSignatures == itemSignatures {
+            logSkippingCache(reason: "menu bar items have not changed")
+            return
+        }
 
-        let hiddenControlItem = items.firstIndex(matching: .hiddenControlItem).map { items.remove(at: $0) }
-        let alwaysHiddenControlItem = items.firstIndex(matching: .alwaysHiddenControlItem).map { items.remove(at: $0) }
+        let hiddenControlItem = removeControlItem(for: .hidden, from: &items)
+        let alwaysHiddenControlItem = removeControlItem(for: .alwaysHidden, from: &items)
 
         guard let hiddenControlItem else {
+            if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 {
+                var cache = ItemCache()
+                let hostedItems = items.filter {
+                    $0.hostedHandle != nil
+                        && $0.ownerPID != ProcessInfo.processInfo.processIdentifier
+                }
+                for item in hostedItems {
+                    hostedItemSnapshots[item.stableID] = item
+                    if hostedSectionAssignments[item.stableID] == nil {
+                        hostedSectionAssignments[item.stableID] = item.isOnScreen ? .visible : .hidden
+                    }
+                    let section = hostedSectionAssignments[item.stableID]
+                        ?? (item.isOnScreen ? .visible : .hidden)
+                    cache[section].append(item)
+                }
+                hostedItemSnapshots = hostedItemSnapshots.filter { _, item in
+                    item.owningApplication != nil
+                }
+                for section in MenuBarSection.Name.allCases {
+                    cache[section] = cache[section].sortedByOrderInMenuBar()
+                }
+                itemCache = cache
+                cachedItemSignatures = itemSignatures
+                return
+            }
             Logger.itemManager.warning("Missing control item for hidden section")
             Logger.itemManager.debug("Clearing menu bar item cache")
             itemCache.clear()
@@ -357,11 +469,69 @@ extension MenuBarItemManager {
                 alwaysHiddenControlItem: alwaysHiddenControlItem,
                 otherItems: items
             )
+            cachedItemSignatures = itemSignatures
         } catch {
             Logger.itemManager.error("Error enforcing control item order: \(error)")
             Logger.itemManager.debug("Clearing menu bar item cache")
             itemCache.clear()
         }
+    }
+
+    /// Records a layout operation independently from AX visibility.
+    func assignHostedItem(_ item: MenuBarItem, to section: MenuBarSection.Name) {
+        guard item.hostedHandle != nil else {
+            return
+        }
+        hostedSectionAssignments[item.stableID] = section
+        hostedItemSnapshots[item.stableID] = item
+        for name in MenuBarSection.Name.allCases {
+            itemCache[name].removeAll { $0.stableID == item.stableID }
+        }
+        itemCache[section].append(item)
+        itemCache[section] = itemCache[section].sortedByOrderInMenuBar()
+        cachedItemSignatures.removeAll()
+    }
+
+    /// Removes Ice's control item using semantic metadata when available and
+    /// its live status-item frame as a fallback on hosted menu bars.
+    private func removeControlItem(
+        for sectionName: MenuBarSection.Name,
+        from items: inout [MenuBarItem]
+    ) -> MenuBarItem? {
+        guard let index = controlItemIndex(for: sectionName, in: items) else {
+            return nil
+        }
+        return items.remove(at: index)
+    }
+
+    /// Locates a control item semantically, with its live frame as a fallback.
+    private func controlItemIndex(
+        for sectionName: MenuBarSection.Name,
+        in items: [MenuBarItem]
+    ) -> Int? {
+        let expectedInfo: MenuBarItemInfo = switch sectionName {
+        case .hidden: .hiddenControlItem
+        case .alwaysHidden: .alwaysHiddenControlItem
+        case .visible: .iceIcon
+        }
+        if let index = items.firstIndex(matching: expectedInfo) {
+            return index
+        }
+        guard
+            let controlItem = appState?.menuBarManager.sections.first(where: { $0.name == sectionName })?.controlItem,
+            let controlFrame = controlItem.windowFrame
+        else {
+            return nil
+        }
+        let candidates = items.indices.filter { index in
+            items[index].ownerPID == ProcessInfo.processInfo.processIdentifier
+        }
+        guard let index = candidates.min(by: { lhs, rhs in
+            abs(items[lhs].frame.midX - controlFrame.midX) < abs(items[rhs].frame.midX - controlFrame.midX)
+        }), abs(items[index].frame.midX - controlFrame.midX) <= max(controlFrame.width, 12) else {
+            return nil
+        }
+        return index
     }
 }
 
@@ -584,11 +754,38 @@ extension MenuBarItemManager {
     ///
     /// - Parameter item: The item to return the current frame for.
     private func getCurrentFrame(for item: MenuBarItem) -> CGRect? {
+        if let hostedHandle = item.hostedHandle {
+            return hostedHandle.currentFrame
+        }
         guard let frame = Bridging.getWindowFrame(for: item.window.windowID) else {
             Logger.itemManager.error("Couldn't get current frame for \(item.logString)")
             return nil
         }
         return frame
+    }
+
+    /// Returns usable geometry for hosted control items whose expanded AX
+    /// frame wraps across the display coordinate space.
+    private func getEffectiveFrame(for item: MenuBarItem) -> CGRect? {
+        guard let frame = getCurrentFrame(for: item) else {
+            return nil
+        }
+        let isControlItem = item.info == .hiddenControlItem || item.info == .alwaysHiddenControlItem
+        guard
+            item.hostedHandle != nil,
+            isControlItem,
+            let screen = NSScreen.screens.first(where: { $0.frame.minX <= frame.minX && frame.minX < $0.frame.maxX }),
+            frame.width > screen.frame.width,
+            screen.frame.width > 0
+        else {
+            return frame
+        }
+        var wrappedX = (frame.maxX - screen.frame.minX).truncatingRemainder(dividingBy: screen.frame.width)
+        if wrappedX < 0 {
+            wrappedX += screen.frame.width
+        }
+        wrappedX += screen.frame.minX
+        return CGRect(x: wrappedX, y: frame.minY, width: 0, height: frame.height)
     }
 
     /// Returns the end point for moving an item to the given destination.
@@ -597,12 +794,12 @@ extension MenuBarItemManager {
     private func getEndPoint(for destination: MoveDestination) throws -> CGPoint {
         switch destination {
         case .leftOfItem(let targetItem):
-            guard let currentFrame = getCurrentFrame(for: targetItem) else {
+            guard let currentFrame = getEffectiveFrame(for: targetItem) else {
                 throw EventError(code: .invalidItem, item: targetItem)
             }
             return CGPoint(x: currentFrame.minX, y: currentFrame.midY)
         case .rightOfItem(let targetItem):
-            guard let currentFrame = getCurrentFrame(for: targetItem) else {
+            guard let currentFrame = getEffectiveFrame(for: targetItem) else {
                 throw EventError(code: .invalidItem, item: targetItem)
             }
             return CGPoint(x: currentFrame.maxX, y: currentFrame.midY)
@@ -644,12 +841,12 @@ extension MenuBarItemManager {
             guard let currentTargetFrame = getCurrentFrame(for: targetItem) else {
                 throw EventError(code: .invalidItem, item: targetItem)
             }
-            return currentFrame.maxX == currentTargetFrame.minX
+            return abs(currentFrame.maxX - currentTargetFrame.minX) <= 1
         case .rightOfItem(let targetItem):
             guard let currentTargetFrame = getCurrentFrame(for: targetItem) else {
                 throw EventError(code: .invalidItem, item: targetItem)
             }
-            return currentFrame.minX == currentTargetFrame.maxX
+            return abs(currentFrame.minX - currentTargetFrame.maxX) <= 1
         }
     }
 
@@ -902,6 +1099,7 @@ extension MenuBarItemManager {
                     Logger.itemManager.debug("Menu bar item frame for \(item.logString) has changed to \(NSStringFromRect(currentFrame))")
                     return
                 }
+                try await Task.sleep(for: .milliseconds(10))
             }
         }
         do {
@@ -1073,7 +1271,7 @@ extension MenuBarItemManager {
     ///   - item: A menu bar item to move.
     ///   - destination: A destination to move the menu bar item.
     func move(item: MenuBarItem, to destination: MoveDestination) async throws {
-        if try itemHasCorrectPosition(item: item, for: destination) {
+        if item.hostedHandle == nil, try itemHasCorrectPosition(item: item, for: destination) {
             Logger.itemManager.debug("\(item.logString) is already in the correct position")
             return
         }
@@ -1085,6 +1283,11 @@ extension MenuBarItemManager {
             try await waitForMouseToStopMoving()
         } catch {
             throw EventError(code: .couldNotComplete, item: item)
+        }
+
+        if item.hostedHandle != nil {
+            try await moveHostedItem(item, to: destination)
+            return
         }
 
         Logger.itemManager.info("Moving \(item.logString) to \(destination.logString)")
@@ -1134,6 +1337,144 @@ extension MenuBarItemManager {
         }
     }
 
+    /// Moves an Accessibility-discovered item with the public Command-drag
+    /// gesture used by macOS menu extras. Hosted items do not have a distinct
+    /// WindowServer identifier, so the legacy event-field path cannot target them.
+    private func moveHostedItem(_ item: MenuBarItem, to destination: MoveDestination) async throws {
+        guard let appState else {
+            throw EventError(code: .invalidAppState, item: item)
+        }
+        func matchingItem(for reference: MenuBarItem, in items: [MenuBarItem]) -> MenuBarItem? {
+            items.first(where: { $0.stableID == reference.stableID })
+                ?? items.first(where: {
+                    $0.ownerPID == reference.ownerPID
+                        && $0.info.title == reference.info.title
+                        && $0.info.namespace == reference.info.namespace
+                })
+                ?? items.first(where: {
+                    $0.ownerPID == reference.ownerPID && $0.info.namespace == reference.info.namespace
+                })
+        }
+
+        // A layout drag is an explicit user action, so do not reuse the periodic
+        // AX enumeration cache here. The cached element can have gone stale while
+        // AppKit was running the drag session.
+        var currentItems = MenuBarItem.getMenuBarItems(
+            onScreenOnly: false,
+            activeSpaceOnly: true,
+            forceRefresh: true
+        )
+        var currentItem = matchingItem(for: item, in: currentItems)
+        var restoreStates: [(ControlItem, ControlItem.HidingState)]?
+
+        // A cached hidden source may not currently exist in AX. Collapse the
+        // spacer controls to reacquire it, then restore their previous states.
+        if currentItem == nil {
+            let controls = appState.menuBarManager.sections.map(\.controlItem)
+            restoreStates = controls.map { ($0, $0.state) }
+            controls.forEach { $0.state = .showItems }
+            try await Task.sleep(for: .milliseconds(120))
+            currentItems = MenuBarItem.getMenuBarItems(
+                onScreenOnly: false,
+                activeSpaceOnly: true,
+                forceRefresh: true
+            )
+            currentItem = matchingItem(for: item, in: currentItems)
+        }
+        defer {
+            restoreStates?.forEach { control, state in control.state = state }
+        }
+
+        // The source view already owns a valid AX handle and frame snapshot. If
+        // fresh enumeration cannot see it momentarily, using that handle is safer
+        // than rejecting a valid item (the old behavior produced `"…" is invalid`).
+        let effectiveItem = currentItem ?? item
+        let originalTarget = getTargetItem(for: destination)
+        let currentTarget = matchingItem(for: originalTarget, in: currentItems) ?? originalTarget
+        let currentDestination: MoveDestination = switch destination {
+        case .leftOfItem: .leftOfItem(currentTarget)
+        case .rightOfItem: .rightOfItem(currentTarget)
+        }
+
+        guard
+            let source = CGEventSource(stateID: .hidSystemState),
+            let cursorLocation = MouseCursor.locationCoreGraphics
+        else {
+            throw EventError(code: .eventCreationFailure, item: item)
+        }
+        let initialFrame = getCurrentFrame(for: effectiveItem)
+            ?? effectiveItem.hostedHandle?.initialFrame
+            ?? item.hostedHandle?.initialFrame
+        guard let initialFrame, initialFrame.width > 0, initialFrame.height > 0 else {
+            throw EventError(code: .invalidItem, item: item)
+        }
+        let start = CGPoint(x: initialFrame.midX, y: initialFrame.midY)
+        let targetFrame = getEffectiveFrame(for: currentTarget)
+            ?? currentTarget.hostedHandle?.initialFrame
+            ?? originalTarget.hostedHandle?.initialFrame
+        guard let targetFrame else {
+            throw EventError(code: .invalidItem, item: originalTarget)
+        }
+        let end = switch currentDestination {
+        case .leftOfItem: CGPoint(x: targetFrame.minX, y: targetFrame.midY)
+        case .rightOfItem: CGPoint(x: targetFrame.maxX, y: targetFrame.midY)
+        }
+        guard
+            let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left),
+            let drag = CGEvent(mouseEventSource: source, mouseType: .leftMouseDragged, mouseCursorPosition: end, mouseButton: .left),
+            let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left)
+        else {
+            throw EventError(code: .eventCreationFailure, item: item)
+        }
+        [down, drag, up].forEach { $0.flags = .maskCommand }
+
+        appState.eventManager.stopAll()
+        MouseCursor.hide()
+        defer {
+            MouseCursor.warp(to: cursorLocation)
+            MouseCursor.show()
+            appState.eventManager.startAll()
+        }
+
+        down.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(120))
+        for step in 1...20 {
+            let progress = CGFloat(step) / 20
+            let point = CGPoint(
+                x: start.x + (end.x - start.x) * progress,
+                y: start.y + (end.y - start.y) * progress
+            )
+            guard let intermediate = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseDragged,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ) else {
+                throw EventError(code: .eventCreationFailure, item: item)
+            }
+            intermediate.flags = .maskCommand
+            intermediate.post(tap: .cghidEventTap)
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        drag.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(30))
+        up.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(60))
+
+        // A successfully hidden hosted item may be removed from AX immediately.
+        // Disappearance is therefore a successful move, not a verification error.
+        guard let newFrame = effectiveItem.hostedHandle?.currentFrame else {
+            cachedItemSignatures.removeAll()
+            Logger.itemManager.info("Successfully hid hosted \(item.logString)")
+            return
+        }
+        guard newFrame != initialFrame else {
+            throw EventError(code: .couldNotComplete, item: item)
+        }
+        cachedItemSignatures.removeAll()
+        Logger.itemManager.info("Successfully moved hosted \(item.logString)")
+    }
+
     /// Moves a menu bar item to the given destination and waits until the move
     /// completes before returning.
     /// 
@@ -1147,12 +1488,16 @@ extension MenuBarItemManager {
             itemMoveCount -= 1
         }
         try await move(item: item, to: destination)
+        if item.hostedHandle != nil {
+            return
+        }
         let waitTask = Task(timeout: timeout) {
             while true {
                 try Task.checkCancellation()
                 if try await self.itemHasCorrectPosition(item: item, for: destination) {
                     return
                 }
+                try await Task.sleep(for: .milliseconds(10))
             }
         }
         do {
@@ -1168,6 +1513,14 @@ extension MenuBarItemManager {
 extension MenuBarItemManager {
     /// Clicks the given menu bar item with the given mouse button.
     func click(item: MenuBarItem, with mouseButton: CGMouseButton) async throws {
+        if mouseButton == .left, item.hostedHandle?.performPress() == true {
+            Logger.itemManager.debug("Pressed hosted \(item.logString) through Accessibility")
+            return
+        }
+        if item.hostedHandle != nil {
+            try await clickHostedItem(item, with: mouseButton)
+            return
+        }
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw EventError(code: .invalidEventSource, item: item)
         }
@@ -1251,6 +1604,38 @@ extension MenuBarItemManager {
             throw error
         }
     }
+
+    /// Clicks a hosted item by screen coordinate when its Accessibility element
+    /// does not support AXPress (including secondary clicks).
+    private func clickHostedItem(_ item: MenuBarItem, with mouseButton: CGMouseButton) async throws {
+        guard
+            let source = CGEventSource(stateID: .hidSystemState),
+            let cursorLocation = MouseCursor.locationCoreGraphics,
+            let frame = getCurrentFrame(for: item)
+        else {
+            throw EventError(code: .eventCreationFailure, item: item)
+        }
+        let eventTypes: (down: CGEventType, up: CGEventType) = switch mouseButton {
+        case .left: (.leftMouseDown, .leftMouseUp)
+        case .right: (.rightMouseDown, .rightMouseUp)
+        default: (.otherMouseDown, .otherMouseUp)
+        }
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        guard
+            let down = CGEvent(mouseEventSource: source, mouseType: eventTypes.down, mouseCursorPosition: point, mouseButton: mouseButton),
+            let up = CGEvent(mouseEventSource: source, mouseType: eventTypes.up, mouseCursorPosition: point, mouseButton: mouseButton)
+        else {
+            throw EventError(code: .eventCreationFailure, item: item)
+        }
+        MouseCursor.hide()
+        defer {
+            MouseCursor.warp(to: cursorLocation)
+            MouseCursor.show()
+        }
+        down.post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(20))
+        up.post(tap: .cghidEventTap)
+    }
 }
 
 // MARK: - Temporarily Show Items
@@ -1258,8 +1643,7 @@ extension MenuBarItemManager {
 extension MenuBarItemManager {
     /// Gets the destination to return the given item to after it is temporarily shown.
     private func getReturnDestination(for item: MenuBarItem, in items: [MenuBarItem]) -> MoveDestination? {
-        let info = item.info
-        if let index = items.firstIndex(where: { $0.info == info }) {
+        if let index = items.firstIndex(where: { $0.stableID == item.stableID }) {
             if items.indices.contains(index + 1) {
                 return .leftOfItem(items[index + 1])
             } else if items.indices.contains(index - 1) {
@@ -1298,10 +1682,9 @@ extension MenuBarItemManager {
     ///     clicked once movement is finished.
     ///   - mouseButton: The mouse button of the click.
     func tempShowItem(_ item: MenuBarItem, clickWhenFinished: Bool, mouseButton: CGMouseButton) {
-        if
-            let latest = MenuBarItem(windowID: item.windowID),
-            latest.isOnScreen
-        {
+        let latest = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+            .first { $0.stableID == item.stableID }
+        if let latest, latest.isOnScreen {
             if clickWhenFinished {
                 Task {
                     do {
@@ -1310,6 +1693,21 @@ extension MenuBarItemManager {
                         Logger.itemManager.error("ERROR: \(error)")
                     }
                 }
+            }
+            return
+        }
+        if
+            let latest,
+            clickWhenFinished,
+            mouseButton == .left,
+            latest.hostedHandle?.performPress() == true
+        {
+            Logger.itemManager.debug("Pressed hidden hosted \(item.logString) through Accessibility")
+            return
+        }
+        if item.hostedHandle != nil, latest == nil {
+            Task {
+                await revealAndClickHostedItem(item, clickWhenFinished: clickWhenFinished, mouseButton: mouseButton)
             }
             return
         }
@@ -1332,10 +1730,12 @@ extension MenuBarItemManager {
             return
         }
 
-        // Remove all items up to the hidden control item.
-        items.trimPrefix { $0.info != .hiddenControlItem }
-        // Remove the hidden control item.
-        items.removeFirst()
+        // Remove all items up to and including the hidden control item.
+        guard let hiddenControlIndex = controlItemIndex(for: .hidden, in: items) else {
+            Logger.itemManager.warning("No hidden control item, so not showing \(item.logString)")
+            return
+        }
+        items.removeSubrange(items.startIndex...hiddenControlIndex)
         // Remove all offscreen items.
         items.trimPrefix { !$0.isOnScreen }
 
@@ -1385,6 +1785,7 @@ extension MenuBarItemManager {
             }
 
             let context = TempShownItemContext(
+                stableID: item.stableID,
                 info: item.info,
                 returnDestination: destination,
                 shownInterfaceWindow: shownInterfaceWindow
@@ -1392,6 +1793,46 @@ extension MenuBarItemManager {
             tempShownItemContexts.append(context)
             runTempShownItemTimer(for: appState.settingsManager.advancedSettingsManager.tempShowInterval)
         }
+    }
+
+    /// Hosted hidden items can disappear from AX. Reveal their owning section
+    /// long enough to reacquire the element and perform the requested click.
+    private func revealAndClickHostedItem(
+        _ item: MenuBarItem,
+        clickWhenFinished: Bool,
+        mouseButton: CGMouseButton
+    ) async {
+        guard let appState else {
+            return
+        }
+        let controls = appState.menuBarManager.sections.map(\.controlItem)
+        let originalStates = controls.map { ($0, $0.state) }
+        controls.forEach { $0.state = .showItems }
+        try? await Task.sleep(for: .milliseconds(150))
+
+        let items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        let latest = items.first { $0.stableID == item.stableID }
+            ?? items.first { candidate in
+                candidate.ownerPID == item.ownerPID && candidate.info.namespace == item.info.namespace
+            }
+        guard let latest else {
+            Logger.itemManager.error("Could not reacquire hosted \(item.logString) after revealing sections")
+            originalStates.forEach { control, state in control.state = state }
+            return
+        }
+
+        if clickWhenFinished {
+            do {
+                try await click(item: latest, with: mouseButton)
+            } catch {
+                Logger.itemManager.error("Failed to click revealed hosted \(item.logString): \(error)")
+            }
+        }
+
+        let interval = max(1, appState.settingsManager.advancedSettingsManager.tempShowInterval)
+        try? await Task.sleep(for: .seconds(interval))
+        originalStates.forEach { control, state in control.state = state }
+        cachedItemSignatures.removeAll()
     }
 
     /// Rehides all temporarily shown items.

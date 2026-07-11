@@ -8,10 +8,22 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var appState: AppState?
+    private var isSecondaryInstance = false
 
     // MARK: NSApplicationDelegate Methods
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let hasOlderInstance = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Constants.bundleIdentifier)
+            .contains { $0.processIdentifier < currentPID }
+        if hasOlderInstance {
+            isSecondaryInstance = true
+            Logger.appDelegate.warning("Terminating duplicate Ice instance")
+            NSApp.terminate(nil)
+            return
+        }
+
         guard let appState else {
             Logger.appDelegate.warning("Missing app state in applicationWillFinishLaunching")
             return
@@ -25,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !isSecondaryInstance else {
+            return
+        }
         guard let appState else {
             Logger.appDelegate.warning("Missing app state in applicationDidFinishLaunching")
             return

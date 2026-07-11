@@ -63,6 +63,13 @@ final class AppState: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Observation tied specifically to the lazily-created settings window.
+    private var settingsWindowCancellable: AnyCancellable?
+
+    /// Prevents managers from being configured more than once when permission
+    /// state and window lifecycle events arrive close together.
+    private var hasPerformedSetup = false
+
     /// A Boolean value that indicates whether the app is running as a SwiftUI preview.
     let isPreview: Bool = {
         #if DEBUG
@@ -119,20 +126,6 @@ final class AppState: ObservableObject {
             }
             .store(in: &c)
 
-        if let settingsWindow {
-            settingsWindow.publisher(for: \.isVisible)
-                .debounce(for: 0.05, scheduler: DispatchQueue.main)
-                .sink { [weak self] isVisible in
-                    guard let self else {
-                        return
-                    }
-                    navigationState.isSettingsPresented = isVisible
-                }
-                .store(in: &c)
-        } else {
-            Logger.appState.warning("No settings window!")
-        }
-
         Publishers.Merge(
             navigationState.$isAppFrontmost,
             navigationState.$isSettingsPresented
@@ -179,6 +172,10 @@ final class AppState: ObservableObject {
 
     /// Sets up the app state.
     func performSetup() {
+        guard !hasPerformedSetup else {
+            return
+        }
+        hasPerformedSetup = true
         configureCancellables()
         permissionsManager.stopAllChecks()
         menuBarManager.performSetup()
@@ -207,7 +204,11 @@ final class AppState: ObservableObject {
             return
         }
         settingsWindow = window
-        configureCancellables()
+        settingsWindowCancellable = window.publisher(for: \.isVisible)
+            .debounce(for: 0.05, scheduler: DispatchQueue.main)
+            .sink { [weak self] isVisible in
+                self?.navigationState.isSettingsPresented = isVisible
+            }
     }
 
     /// Assigns the permissions window to the app state.
@@ -217,7 +218,6 @@ final class AppState: ObservableObject {
             return
         }
         permissionsWindow = window
-        configureCancellables()
     }
 
     /// Opens the settings window.

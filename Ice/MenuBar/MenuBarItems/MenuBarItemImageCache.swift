@@ -9,7 +9,7 @@ import Combine
 /// Cache for menu bar item images.
 final class MenuBarItemImageCache: ObservableObject {
     /// The cached item images.
-    @Published private(set) var images = [MenuBarItemInfo: CGImage]()
+    @Published private(set) var images = [String: CGImage]()
 
     /// The screen of the cached item images.
     private(set) var screen: NSScreen?
@@ -91,7 +91,7 @@ final class MenuBarItemImageCache: ObservableObject {
             return false
         }
         let keys = Set(images.keys)
-        for item in items where keys.contains(item.info) {
+        for item in items where keys.contains(item.stableID) {
             return false
         }
         return true
@@ -99,25 +99,28 @@ final class MenuBarItemImageCache: ObservableObject {
 
     /// Captures the images of the current menu bar items and returns a dictionary containing
     /// the images, keyed by the current menu bar item infos.
-    func createImages(for section: MenuBarSection.Name, screen: NSScreen) async -> [MenuBarItemInfo: CGImage] {
+    func createImages(for section: MenuBarSection.Name, screen: NSScreen) async -> [String: CGImage] {
         guard let appState else {
             return [:]
         }
 
         let items = await appState.itemManager.itemCache[section]
 
-        var images = [MenuBarItemInfo: CGImage]()
+        var images = [String: CGImage]()
         let backingScaleFactor = screen.backingScaleFactor
         let displayBounds = CGDisplayBounds(screen.displayID)
         let option: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
         let defaultItemThickness = NSStatusBar.system.thickness * backingScaleFactor
 
-        var itemInfos = [CGWindowID: MenuBarItemInfo]()
+        var itemIDs = [CGWindowID: String]()
         var itemFrames = [CGWindowID: CGRect]()
         var windowIDs = [CGWindowID]()
         var frame = CGRect.null
 
-        for item in items {
+        let hostedItems = items.filter { $0.hostedHandle != nil }
+        let legacyItems = items.filter { $0.hostedHandle == nil }
+
+        for item in legacyItems {
             let windowID = item.windowID
             guard
                 // Use the most up-to-date window frame.
@@ -126,19 +129,20 @@ final class MenuBarItemImageCache: ObservableObject {
             else {
                 continue
             }
-            itemInfos[windowID] = item.info
+            itemIDs[windowID] = item.stableID
             itemFrames[windowID] = itemFrame
             windowIDs.append(windowID)
             frame = frame.union(itemFrame)
         }
 
         if
+            !windowIDs.isEmpty,
             let compositeImage = ScreenCapture.captureWindows(windowIDs, option: option),
             CGFloat(compositeImage.width) == frame.width * backingScaleFactor
         {
             for windowID in windowIDs {
                 guard
-                    let itemInfo = itemInfos[windowID],
+                    let itemID = itemIDs[windowID],
                     let itemFrame = itemFrames[windowID]
                 else {
                     continue
@@ -155,14 +159,14 @@ final class MenuBarItemImageCache: ObservableObject {
                     continue
                 }
 
-                images[itemInfo] = itemImage
+                images[itemID] = itemImage
             }
-        } else {
+        } else if !windowIDs.isEmpty {
             Logger.imageCache.warning("Composite image capture failed. Attempting to capturing items individually.")
 
             for windowID in windowIDs {
                 guard
-                    let itemInfo = itemInfos[windowID],
+                    let itemID = itemIDs[windowID],
                     let itemFrame = itemFrames[windowID]
                 else {
                     continue
@@ -182,7 +186,45 @@ final class MenuBarItemImageCache: ObservableObject {
                     continue
                 }
 
-                images[itemInfo] = croppedImage
+                images[itemID] = croppedImage
+            }
+        }
+
+        // On hosted menu bars, every AX item can resolve to the same backing
+        // window. Capture that window through each item's screen rectangle.
+        let hostedWindowIDs = Bridging.getWindowList(option: [.menuBarItems, .activeSpace])
+        for item in hostedItems {
+            let fallbackWindowID = hostedWindowIDs.first { windowID in
+                Bridging.getWindowFrame(for: windowID)?.intersects(item.frame) == true
+            }
+            guard
+                let itemFrame = item.hostedHandle?.currentFrame,
+                itemFrame.intersects(displayBounds),
+                itemFrame.minY <= displayBounds.minY + NSStatusBar.system.thickness,
+                let windowID = item.hostedHandle?.windowID ?? fallbackWindowID,
+                let capturedImage = ScreenCapture.captureWindow(windowID, screenBounds: itemFrame, option: option)
+            else {
+                continue
+            }
+            let expectedSize = CGSize(
+                width: itemFrame.width * backingScaleFactor,
+                height: itemFrame.height * backingScaleFactor
+            )
+            if
+                CGFloat(capturedImage.width) > expectedSize.width + 1,
+                CGFloat(capturedImage.height) >= expectedSize.height,
+                let croppedImage = capturedImage.cropping(to: CGRect(
+                    x: ((itemFrame.minX - displayBounds.minX) * backingScaleFactor)
+                        .clamped(to: 0...max(0, CGFloat(capturedImage.width) - expectedSize.width)),
+                    y: ((itemFrame.minY - displayBounds.minY) * backingScaleFactor)
+                        .clamped(to: 0...max(0, CGFloat(capturedImage.height) - expectedSize.height)),
+                    width: expectedSize.width,
+                    height: expectedSize.height
+                ))
+            {
+                images[item.stableID] = croppedImage
+            } else {
+                images[item.stableID] = capturedImage
             }
         }
 
@@ -198,7 +240,7 @@ final class MenuBarItemImageCache: ObservableObject {
             return
         }
 
-        var newImages = [MenuBarItemInfo: CGImage]()
+        var newImages = [String: CGImage]()
 
         for section in sections {
             guard await !appState.itemManager.itemCache[section].isEmpty else {

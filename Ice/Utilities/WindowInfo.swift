@@ -73,6 +73,28 @@ struct WindowInfo {
         Bridging.isWindowOnActiveSpace(windowID)
     }
 
+    /// Creates a structural window description for an accessibility-hosted menu
+    /// bar item. The identifier remains a real WindowServer identifier when one
+    /// is available; otherwise the null identifier is used only as metadata and
+    /// never sent to WindowServer operations.
+    init(hostedItem: HostedMenuBarItemHandle) {
+        self.windowID = hostedItem.windowID ?? kCGNullWindowID
+        self.frame = hostedItem.initialFrame
+        self.title = hostedItem.title
+        self.layer = Int(kCGStatusWindowLevel)
+        self.alpha = 1
+        self.ownerPID = hostedItem.sourcePID
+        self.ownerName = NSRunningApplication(processIdentifier: hostedItem.sourcePID)?.localizedName
+        self.sharingState = CGWindowSharingType(rawValue: 1)! // swiftlint:disable:this force_unwrapping
+        self.backingStoreType = .backingStoreBuffered
+        self.memoryUsage = Measurement(value: 0, unit: .bytes)
+        self.isOnScreen = NSScreen.screens.contains { screen in
+            let bounds = CGDisplayBounds(screen.displayID)
+            return bounds.intersects(hostedItem.initialFrame)
+        }
+        self.isBackedByVideoMemory = false
+    }
+
     /// Creates a window with the given dictionary.
     private init?(dictionary: CFDictionary) {
         guard

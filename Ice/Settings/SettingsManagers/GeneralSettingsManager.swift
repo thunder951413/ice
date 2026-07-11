@@ -151,8 +151,18 @@ final class GeneralSettingsManager: ObservableObject {
 
         $useIceBar
             .receive(on: DispatchQueue.main)
-            .sink { useIceBar in
+            .sink { [weak self] useIceBar in
                 Defaults.set(useIceBar, forKey: .useIceBar)
+                guard let appState = self?.appState else {
+                    return
+                }
+                appState.menuBarManager.iceBarPanel.close()
+                for section in appState.menuBarManager.sections {
+                    section.controlItem.state = .hideItems
+                }
+                Task {
+                    await appState.itemManager.cacheItemsIfNeeded()
+                }
             }
             .store(in: &c)
 

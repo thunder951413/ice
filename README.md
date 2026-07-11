@@ -85,6 +85,16 @@ brew install --cask jordanbaird-ice
 
 Ice uses a number of system APIs that are available starting in macOS 14. As such, there are no plans to support earlier versions of macOS.
 
+## Development
+
+Build the Debug app with:
+
+```sh
+./Scripts/build-local.sh -quiet
+```
+
+The script uses the first local Apple Development certificate and derives its team automatically. If no development certificate is installed, it produces an unsigned build instead. Build products are written to `build/DerivedData`.
+
 ## Gallery
 
 #### Show hidden menu bar items below the menu bar

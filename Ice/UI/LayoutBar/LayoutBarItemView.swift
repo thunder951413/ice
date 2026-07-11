@@ -44,7 +44,7 @@ final class LayoutBarItemView: NSView {
                 )
                 setFrameSize(size)
             } else {
-                setFrameSize(.zero)
+                setFrameSize(CGSize(width: max(40, item.frame.width), height: max(20, item.frame.height)))
             }
             needsDisplay = true
         }
@@ -94,8 +94,13 @@ final class LayoutBarItemView: NSView {
                 .sink { [weak self] images in
                     guard
                         let self,
-                        let cgImage = images[item.info]
+                        let cgImage = images[item.stableID]
                     else {
+                        return
+                    }
+                    let scale = appState.imageCache.screen?.backingScaleFactor ?? 2
+                    guard CGFloat(cgImage.width) <= max(200, item.frame.width * scale * 2) else {
+                        image = nil
                         return
                     }
                     image = NSImage(cgImage: cgImage, size: CGSize(width: cgImage.width, height: cgImage.height))
@@ -123,12 +128,36 @@ final class LayoutBarItemView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         if !isDraggingPlaceholder {
-            image?.draw(
-                in: bounds,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: isEnabled ? 1.0 : 0.67
-            )
+            if let image {
+                NSGraphicsContext.saveGraphicsState()
+                let shadow = NSShadow()
+                shadow.shadowColor = NSColor.black.withAlphaComponent(0.65)
+                shadow.shadowBlurRadius = 2
+                shadow.shadowOffset = .zero
+                shadow.set()
+                image.draw(
+                    in: bounds,
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: isEnabled ? 1.0 : 0.67
+                )
+                NSGraphicsContext.restoreGraphicsState()
+            } else {
+                let background = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 2), xRadius: 6, yRadius: 6)
+                NSColor.controlAccentColor.withAlphaComponent(isEnabled ? 0.16 : 0.08).setFill()
+                background.fill()
+                let paragraphStyle = NSMutableParagraphStyle()
+                paragraphStyle.alignment = .center
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                    .foregroundColor: NSColor.labelColor.withAlphaComponent(isEnabled ? 1 : 0.67),
+                    .paragraphStyle: paragraphStyle,
+                ]
+                NSString(string: item.displayName).draw(
+                    in: bounds.insetBy(dx: 4, dy: max(2, (bounds.height - 14) / 2)),
+                    withAttributes: attributes
+                )
+            }
             if Bridging.responsivity(for: item.ownerPID) == .unresponsive {
                 let warningImage = NSImage.warning
                 let width: CGFloat = 15

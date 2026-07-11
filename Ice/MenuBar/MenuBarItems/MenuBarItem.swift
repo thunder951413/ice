@@ -15,6 +15,13 @@ struct MenuBarItem {
     /// The menu bar item info associated with this item.
     let info: MenuBarItemInfo
 
+    /// Accessibility handle used when the system hosts multiple menu bar items
+    /// inside a shared window.
+    let hostedHandle: HostedMenuBarItemHandle?
+
+    /// Stable identity used across cache refreshes.
+    let stableID: String
+
     /// The identifier of the item's window.
     var windowID: CGWindowID {
         window.windowID
@@ -22,7 +29,7 @@ struct MenuBarItem {
 
     /// The frame of the item's window.
     var frame: CGRect {
-        window.frame
+        hostedHandle?.currentFrame ?? window.frame
     }
 
     /// The title of the item's window.
@@ -32,7 +39,10 @@ struct MenuBarItem {
 
     /// A Boolean value that indicates whether the item is on screen.
     var isOnScreen: Bool {
-        window.isOnScreen
+        guard let hostedHandle else {
+            return window.isOnScreen
+        }
+        return hostedHandle.isOnScreen
     }
 
     /// A Boolean value that indicates whether the item can be moved.
@@ -111,6 +121,9 @@ struct MenuBarItem {
     /// A Boolean value that indicates whether the item is currently
     /// in the menu bar.
     var isCurrentlyInMenuBar: Bool {
+        if let hostedHandle {
+            return hostedHandle.currentFrame != nil
+        }
         let list = Set(Bridging.getWindowList(option: .menuBarItems))
         return list.contains(windowID)
     }
@@ -128,6 +141,19 @@ struct MenuBarItem {
     private init(uncheckedItemWindow itemWindow: WindowInfo) {
         self.window = itemWindow
         self.info = MenuBarItemInfo(uncheckedItemWindow: itemWindow)
+        self.hostedHandle = nil
+        self.stableID = "window:\(itemWindow.windowID)"
+    }
+
+    /// Creates an item backed by an Accessibility element.
+    init(hostedHandle: HostedMenuBarItemHandle) {
+        self.window = WindowInfo(hostedItem: hostedHandle)
+        self.info = MenuBarItemInfo(
+            namespace: MenuBarItemInfo.Namespace(hostedHandle.sourceBundleIdentifier),
+            title: hostedHandle.title ?? ""
+        )
+        self.hostedHandle = hostedHandle
+        self.stableID = "hosted:\(hostedHandle.stableID)"
     }
 
     /// Creates a menu bar item.
@@ -171,7 +197,12 @@ extension MenuBarItem {
     ///     are on screen should be returned.
     ///   - activeSpaceOnly: A Boolean value that indicates whether only the menu bar items
     ///     that are on the active space should be returned.
-    static func getMenuBarItems(on display: CGDirectDisplayID? = nil, onScreenOnly: Bool, activeSpaceOnly: Bool) -> [MenuBarItem] {
+    static func getMenuBarItems(
+        on display: CGDirectDisplayID? = nil,
+        onScreenOnly: Bool,
+        activeSpaceOnly: Bool,
+        forceRefresh: Bool = false
+    ) -> [MenuBarItem] {
         var option: Bridging.WindowListOption = [.menuBarItems]
 
         var titlePredicate: (MenuBarItem) -> Bool = { _ in true }
@@ -194,7 +225,26 @@ extension MenuBarItem {
             }
         }
 
-        return Bridging.getWindowList(option: option).lazy
+        let legacyWindowIDs = Bridging.getWindowList(option: option)
+        switch HostedMenuBarBackend.preferredMode(for: legacyWindowIDs) {
+        case .hostedAccessibility:
+            return HostedMenuBarBackend.enumerate(forceRefresh: forceRefresh).lazy
+                .map(MenuBarItem.init(hostedHandle:))
+                .filter { item in
+                    guard let display else { return true }
+                    return CGDisplayBounds(display).intersects(item.frame)
+                }
+                .filter { item in
+                    !onScreenOnly || item.isOnScreen
+                }
+                .sortedByOrderInMenuBar()
+        case .unavailable:
+            return []
+        case .legacyWindows:
+            break
+        }
+
+        return legacyWindowIDs.lazy
             .filter(boundsPredicate)
             .compactMap { windowID in
                 MenuBarItem(windowID: windowID)
@@ -207,14 +257,16 @@ extension MenuBarItem {
 // MARK: MenuBarItem: Equatable
 extension MenuBarItem: Equatable {
     static func == (lhs: MenuBarItem, rhs: MenuBarItem) -> Bool {
-        lhs.window == rhs.window
+        lhs.stableID == rhs.stableID && lhs.frame == rhs.frame && lhs.isOnScreen == rhs.isOnScreen
     }
 }
 
 // MARK: MenuBarItem: Hashable
 extension MenuBarItem: Hashable {
     func hash(into hasher: inout Hasher) {
-        hasher.combine(window)
+        hasher.combine(stableID)
+        hasher.combine(NSStringFromRect(frame))
+        hasher.combine(isOnScreen)
     }
 }
 
