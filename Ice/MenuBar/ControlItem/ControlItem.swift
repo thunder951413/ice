@@ -92,9 +92,11 @@ final class ControlItem {
                 button.setAccessibilityIdentifier(identifier.rawValue)
                 button.target = self
                 button.action = #selector(performAction)
+                #if compiler(>=6.4)
                 if #available(macOS 27, *) {
                     button.addTarget(self, action: #selector(performHostedPrimaryAction), for: .primaryActionTriggered)
                 }
+                #endif
                 let useIceBar = appState?.settingsManager.generalSettingsManager.useIceBar ?? false
                 button.sendAction(on: useIceBar ? [.leftMouseDown, .rightMouseUp] : [.leftMouseUp, .rightMouseUp])
                 button.isEnabled = true
@@ -509,9 +511,13 @@ final class ControlItem {
         button.setAccessibilityIdentifier(identifier.rawValue)
         button.target = self
         button.action = #selector(performAction)
+        // Xcode 26 CI can validate the legacy fallback; the macOS 27 release
+        // is built with Xcode 27 / Swift 6.4 and also binds the hosted action.
+        #if compiler(>=6.4)
         if #available(macOS 27, *) {
             button.addTarget(self, action: #selector(performHostedPrimaryAction), for: .primaryActionTriggered)
         }
+        #endif
     }
 
     /// Updates the appearance of the status item using the given hiding state.
