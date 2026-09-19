@@ -176,7 +176,7 @@ private struct MenuBarSearchContentView: View {
 
     private enum ItemID: Hashable {
         case header(MenuBarSection.Name)
-        case item(MenuBarItemInfo)
+        case item(String)
     }
 
     @EnvironmentObject var itemManager: MenuBarItemManager
@@ -269,7 +269,7 @@ private struct MenuBarSearchContentView: View {
             items.append((headerItem, section.displayString))
 
             for item in itemManager.itemCache.managedItems(for: section).reversed() {
-                let listItem = ListItem.item(id: .item(item.info)) {
+                let listItem = ListItem.item(id: .item(item.stableID)) {
                     performAction(for: item)
                 } content: {
                     MenuBarSearchItemView(item: item)
@@ -294,8 +294,8 @@ private struct MenuBarSearchContentView: View {
 
     private func menuBarItem(for selection: ItemID) -> MenuBarItem? {
         switch selection {
-        case .item(let info):
-            itemManager.itemCache.managedItems.first { $0.info == info }
+        case .item(let stableID):
+            itemManager.itemCache.managedItems.first { $0.stableID == stableID }
         case .header:
             nil
         }
