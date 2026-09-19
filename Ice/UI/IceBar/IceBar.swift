@@ -308,7 +308,9 @@ private struct IceBarContentView: View {
             .background { IceBarSurface(style: settings.iceBarStyle) }
             .contentShape(Rectangle())
             .contextMenu {
-                Button("Search menu bar items…", action: openSearch)
+                if settings.enableMenuBarSearch {
+                    Button("Search menu bar items…", action: openSearch)
+                }
                 Button("Arrange hidden items…") { openSettings(.menuBarLayout) }
                 Button("Ice Bar settings…") { openSettings(.general) }
                 Divider()

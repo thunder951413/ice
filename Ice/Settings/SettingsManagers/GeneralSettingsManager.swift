@@ -27,6 +27,9 @@ final class GeneralSettingsManager: ObservableObject {
     /// in a separate bar below the menu bar.
     @Published var useIceBar = false
 
+    /// Enables the menu bar item search panel and its shortcut.
+    @Published var enableMenuBarSearch = true
+
     /// The location where the Ice Bar appears.
     @Published var iceBarLocation: IceBarLocation = .dynamic
 
@@ -96,6 +99,7 @@ final class GeneralSettingsManager: ObservableObject {
         Defaults.ifPresent(key: .showIceIcon, assign: &showIceIcon)
         Defaults.ifPresent(key: .customIceIconIsTemplate, assign: &customIceIconIsTemplate)
         Defaults.ifPresent(key: .useIceBar, assign: &useIceBar)
+        Defaults.ifPresent(key: .enableMenuBarSearch, assign: &enableMenuBarSearch)
         Defaults.ifPresent(key: .showOnClick, assign: &showOnClick)
         Defaults.ifPresent(key: .showOnHover, assign: &showOnHover)
         Defaults.ifPresent(key: .showOnScroll, assign: &showOnScroll)
@@ -204,6 +208,18 @@ final class GeneralSettingsManager: ObservableObject {
                 Task {
                     await appState.itemManager.cacheItemsIfNeeded()
                 }
+            }
+            .store(in: &c)
+
+        $enableMenuBarSearch
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                Defaults.set(enabled, forKey: .enableMenuBarSearch)
+                guard let appState = self?.appState else { return }
+                if !enabled { appState.menuBarManager.searchPanel.close() }
+                // Re-register only when enabled; retain the saved combination.
+                appState.settingsManager.hotkeySettingsManager.hotkey(withAction: .searchMenuBarItems)?.setRegistrationAllowed(enabled)
             }
             .store(in: &c)
 

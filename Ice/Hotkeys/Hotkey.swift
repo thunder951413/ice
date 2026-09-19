@@ -11,6 +11,7 @@ final class Hotkey: ObservableObject {
     private weak var appState: AppState?
 
     private var listener: Listener?
+    private var registrationAllowed = true
 
     let action: HotkeyAction
 
@@ -29,13 +30,21 @@ final class Hotkey: ObservableObject {
         self.action = action
     }
 
+    @MainActor
     func assignAppState(_ appState: AppState) {
         self.appState = appState
+        registrationAllowed = action != .searchMenuBarItems || appState.settingsManager.generalSettingsManager.enableMenuBarSearch
+        enable()
+    }
+
+    func setRegistrationAllowed(_ allowed: Bool) {
+        registrationAllowed = allowed
         enable()
     }
 
     func enable() {
         disable()
+        guard registrationAllowed else { return }
         listener = Listener(hotkey: self, eventKind: .keyDown, appState: appState)
     }
 

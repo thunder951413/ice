@@ -28,10 +28,13 @@
 - **可调尺寸**：General → Use Ice Bar 下设置 Icon size、Icon spacing、Background padding；支持保存和 Reset sizes。
 - **常用操作**：Escape 收起，方向键选择，Return／空格打开；右键 Bar 的背景可搜索、打开设置或暂停隐藏。右键应用图标保留该应用的次要操作。
 - **分区管理**：Visible、Hidden、Always-Hidden；自动收起、快捷键和登录启动。
+- **可关闭搜索**：General → Enable menu bar search。关闭后隐藏菜单栏搜索入口并释放搜索快捷键，保留快捷键配置；Ice 的搜索仅用于菜单栏图标。
 - **无损暂停**：Pause Hiding 临时显示所有项目，Resume Hiding 恢复原分区；Reset Menu Bar Layout 是单独的确认操作。
 - **响应与恢复**：串行后台扫描菜单栏，合并重复请求并限制扫描时间；搜索先显示再刷新。隐藏切换保留旧状态直到新状态生效，支持超时、重试和权限恢复。
 
 默认图标为 **28 pt**，项目热区间距 **2 pt**，背景上下留白 **4 pt**，可见背景高度约 **40 pt**。尺寸范围分别为 16–36、0–12、2–12 pt。
+
+若登录启动提示等待系统允许，点击 **Open Login Item Settings**，在“系统设置 → 通用 → 登录项与扩展”的后台 App 活动中允许 Ice。返回应用时开关会同步系统状态；注册失败会显示错误原因。
 
 ## macOS 27 使用说明
 

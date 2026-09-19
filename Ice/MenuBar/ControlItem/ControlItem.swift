@@ -625,22 +625,23 @@ final class ControlItem {
 
         menu.addItem(.separator())
 
-        let searchItem = NSMenuItem(
-            title: "Search Menu Bar Items",
-            action: #selector(showSearchPanel),
-            keyEquivalent: ""
-        )
-        searchItem.target = self
-        if
-            let hotkey = hotkey(withAction: .searchMenuBarItems),
-            let keyCombination = hotkey.keyCombination
-        {
-            searchItem.keyEquivalent = keyCombination.key.keyEquivalent
-            searchItem.keyEquivalentModifierMask = keyCombination.modifiers.nsEventFlags
+        if appState.settingsManager.generalSettingsManager.enableMenuBarSearch {
+            let searchItem = NSMenuItem(
+                title: "Search Menu Bar Items",
+                action: #selector(showSearchPanel),
+                keyEquivalent: ""
+            )
+            searchItem.target = self
+            if
+                let hotkey = hotkey(withAction: .searchMenuBarItems),
+                let keyCombination = hotkey.keyCombination
+            {
+                searchItem.keyEquivalent = keyCombination.key.keyEquivalent
+                searchItem.keyEquivalentModifierMask = keyCombination.modifiers.nsEventFlags
+            }
+            menu.addItem(searchItem)
+            menu.addItem(.separator())
         }
-        menu.addItem(searchItem)
-
-        menu.addItem(.separator())
 
         // Add menu items to toggle the hidden and always-hidden sections.
         let sectionNames: [MenuBarSection.Name] = [.hidden, .alwaysHidden]

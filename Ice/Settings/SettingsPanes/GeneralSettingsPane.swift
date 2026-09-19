@@ -3,11 +3,12 @@
 //  Ice
 //
 
-import LaunchAtLogin
 import SwiftUI
 
+@MainActor
 struct GeneralSettingsPane: View {
     @EnvironmentObject var appState: AppState
+    @StateObject private var loginItemManager = LoginItemManager()
     @State private var isImportingCustomIceIcon = false
     @State private var isPresentingError = false
     @State private var presentedError: LocalizedErrorWrapper?
@@ -65,6 +66,10 @@ struct GeneralSettingsPane: View {
                 iceBarOptions
             }
             IceSection {
+                Toggle("Enable menu bar search", isOn: manager.bindings.enableMenuBarSearch)
+                    .annotation("Search menu bar icons only. Turning this off hides search commands and disables its shortcut.")
+            }
+            IceSection {
                 showOnClick
                 showOnHover
                 showOnScroll
@@ -101,7 +106,38 @@ struct GeneralSettingsPane: View {
 
     @ViewBuilder
     private var launchAtLogin: some View {
-        LaunchAtLogin.Toggle()
+        Toggle(
+            "Launch at login",
+            isOn: Binding(
+                get: { loginItemManager.isEnabled },
+                set: { loginItemManager.setEnabled($0) }
+            )
+        )
+        .annotation {
+            VStack(alignment: .leading, spacing: 6) {
+                switch loginItemManager.status {
+                case .requiresApproval:
+                    Text("Allow Ice in System Settings to finish enabling launch at login.")
+                    Button("Open Login Item Settings") {
+                        loginItemManager.openSystemSettings()
+                    }
+                case .notFound:
+                    Text("Ice could not find its login item registration. Move Ice to Applications and try again.")
+                case .enabled, .notRegistered:
+                    EmptyView()
+                }
+
+                if let errorMessage = loginItemManager.errorMessage {
+                    Text(errorMessage)
+                }
+            }
+        }
+        .onAppear {
+            loginItemManager.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItemManager.refresh()
+        }
     }
 
     @ViewBuilder

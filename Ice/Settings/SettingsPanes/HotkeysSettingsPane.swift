@@ -20,6 +20,12 @@ struct HotkeysSettingsPane: View {
             }
             IceSection("Menu Bar Items") {
                 hotkeyRecorder(forAction: .searchMenuBarItems)
+                    .disabled(!appState.settingsManager.generalSettingsManager.enableMenuBarSearch)
+                    .annotation {
+                        if !appState.settingsManager.generalSettingsManager.enableMenuBarSearch {
+                            Text("Menu bar search is turned off in General settings. Your shortcut is kept for when you enable it again.")
+                        }
+                    }
             }
             IceSection("Other") {
                 hotkeyRecorder(forAction: .enableIceBar)
