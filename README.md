@@ -70,7 +70,7 @@ CONFIGURATION=Release ./Scripts/build-local.sh -quiet
 
 原生测试默认检查三轮隐藏／恢复；`ICE_TEST_ALLOWLIST=1` 可启用临时应用的严格允许列表诊断，该诊断在当前系统上仍有已知失败，不能等同于正式安装副本的测试。
 
-发布流程与签名说明见 [发布指南](https://github.com/thunder951413/ice/blob/v0.12.0/Docs/releasing.md)。GitHub Actions 校验已准备的发行包、签名和版本，再发布 Release 与更新源；Apple 签名私钥无需上传 GitHub。
+发布流程与签名说明见 [发布指南](https://github.com/thunder951413/ice/blob/codex/macos27-compat/Docs/releasing.md)。GitHub Actions 校验已准备的发行包、签名和版本，再发布 Release 与更新源；Apple 签名私钥无需上传 GitHub。
 
 ## 来源与许可证
 
