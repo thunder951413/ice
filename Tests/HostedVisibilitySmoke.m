@@ -151,6 +151,17 @@ static BOOL IceWaitForProbeRenderState(CGRect frame, pid_t fixturePID, BOOL expe
     return (state == IceProbeRenderStatePresent) == expected && state != IceProbeRenderStateUnknown;
 }
 
+static BOOL IceProbeRemainsHiddenForDuration(CGRect frame, pid_t fixturePID, NSTimeInterval duration) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:duration];
+    do {
+        if (IceProbeRenderStateInMenuBand(frame, fixturePID) != IceProbeRenderStateAbsent) {
+            return NO;
+        }
+        [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    } while (deadline.timeIntervalSinceNow > 0);
+    return IceProbeRenderStateInMenuBand(frame, fixturePID) == IceProbeRenderStateAbsent;
+}
+
 static BOOL IceWaitForProbeFrame(NSString *fixtureBundleIdentifier, CGRect *frame, pid_t *fixturePID,
                                  NSTimeInterval timeout) {
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
@@ -177,7 +188,7 @@ static int IceRunFixture(void) {
     });
 
     // The fixture owns its lifetime and cannot leave a permanent status item.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 45 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (statusItem) { [[NSStatusBar systemStatusBar] removeStatusItem:statusItem]; }
         [NSApp terminate:nil];
     });
@@ -275,59 +286,98 @@ static int IceRunController(NSString *fixtureBundleIdentifier, NSString *resultP
     }
 
     for (NSUInteger cycle = 1; cycle <= 3; cycle++) {
-    __block BOOL completionCalled = NO;
-    __block NSError *completionError = nil;
-    __block void *handle = NULL;
-    __block BOOL invalidated = NO;
-    void (^cleanup)(void) = ^{
-        if (handle && !invalidated) {
-            IceMenuBarVisibilityInvalidate(handle);
-            invalidated = YES;
-            handle = NULL;
-        }
-    };
-
-    handle = IceMenuBarVisibilityActivate(
+    __block BOOL initialCompletionCalled = NO;
+    __block NSError *initialCompletionError = nil;
+    void *initialHandle = IceMenuBarVisibilityActivate(
         IceAllowedBundleIdentifiers(fixtureBundleIdentifier),
         @[ @0, @1, @2, @3, @4, @5, @6, @7, @8 ],
         ^(NSError *error) {
-            completionCalled = YES;
-            completionError = error;
+            initialCompletionCalled = YES;
+            initialCompletionError = error;
         });
 
-    // The owner is guaranteed to release the assertion before ten seconds.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_main_queue(), cleanup);
-
-    BOOL succeeded = handle != NULL;
+    BOOL succeeded = initialHandle != NULL;
     if (!succeeded) {
-        NSLog(@"[HostedVisibilitySmoke] activation could not start.");
+        NSLog(@"[HostedVisibilitySmoke] initial activation could not start.");
     }
     if (succeeded) {
         NSDate *completionDeadline = [NSDate dateWithTimeIntervalSinceNow:3.0];
-        while (!completionCalled && completionDeadline.timeIntervalSinceNow > 0) {
+        while (!initialCompletionCalled && completionDeadline.timeIntervalSinceNow > 0) {
             [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
         }
-        succeeded = completionCalled && completionError == nil;
+        succeeded = initialCompletionCalled && initialCompletionError == nil;
         if (!succeeded) {
-            NSLog(@"[HostedVisibilitySmoke] activation completion failed: %@", completionError);
+            NSLog(@"[HostedVisibilitySmoke] initial activation completion failed: %@", initialCompletionError);
         }
     }
     if (succeeded) {
         succeeded = IceWaitForProbeRenderState(probeFrame, fixturePID, NO, 3.0);
         if (!succeeded) {
-            NSLog(@"[HostedVisibilitySmoke] fixture remained visible after activation.");
+            NSLog(@"[HostedVisibilitySmoke] fixture remained visible after initial activation.");
         }
     }
 
-    cleanup();
+    __block BOOL replacementCompletionCalled = NO;
+    __block NSError *replacementCompletionError = nil;
+    void *replacementHandle = NULL;
+    if (succeeded) {
+        NSMutableArray<NSString *> *replacementAllowed =
+            [IceAllowedBundleIdentifiers(fixtureBundleIdentifier) mutableCopy];
+        [replacementAllowed addObject:
+            [NSString stringWithFormat:@"com.ice.visibility-smoke.handover-%lu", (unsigned long)cycle]];
+        replacementHandle = IceMenuBarVisibilityActivate(
+            replacementAllowed,
+            @[ @0, @1, @2, @3, @4, @5, @6, @7, @8 ],
+            ^(NSError *error) {
+                replacementCompletionCalled = YES;
+                replacementCompletionError = error;
+            });
+        succeeded = replacementHandle != NULL;
+        if (!succeeded) {
+            NSLog(@"[HostedVisibilitySmoke] replacement activation could not start.");
+        }
+    }
+    if (succeeded) {
+        NSDate *replacementDeadline = [NSDate dateWithTimeIntervalSinceNow:3.0];
+        while (!replacementCompletionCalled && replacementDeadline.timeIntervalSinceNow > 0) {
+            if (!IceProbeRemainsHiddenForDuration(probeFrame, fixturePID, 0.05)) {
+                NSLog(@"[HostedVisibilitySmoke] fixture became visible while replacement activated.");
+                succeeded = NO;
+                break;
+            }
+        }
+        if (succeeded) {
+            succeeded = replacementCompletionCalled && replacementCompletionError == nil;
+            if (!succeeded) {
+                NSLog(@"[HostedVisibilitySmoke] replacement activation completion failed: %@",
+                      replacementCompletionError);
+            }
+        }
+    }
+
+    // Releasing the superseded assertion after replacement completion must not
+    // produce even a transient visible frame while the replacement is retained.
+    if (initialHandle) {
+        IceMenuBarVisibilityInvalidate(initialHandle);
+        initialHandle = NULL;
+    }
+    if (succeeded && !IceProbeRemainsHiddenForDuration(probeFrame, fixturePID, 0.75)) {
+        NSLog(@"[HostedVisibilitySmoke] fixture became visible after superseded assertion invalidation.");
+        succeeded = NO;
+    }
+    if (replacementHandle) {
+        IceMenuBarVisibilityInvalidate(replacementHandle);
+        replacementHandle = NULL;
+    }
     BOOL restored = IceWaitForProbeRenderState(probeFrame, fixturePID, YES, 3.0);
     if (!restored) {
-        NSLog(@"[HostedVisibilitySmoke] fixture did not reappear after invalidation.");
+        NSLog(@"[HostedVisibilitySmoke] fixture did not reappear after replacement invalidation.");
     }
     if (!succeeded || !restored) {
         return IceFinishController(5, resultPath);
     }
-    NSLog(@"[HostedVisibilitySmoke] cycle %lu passed: hide, completion, and restoration observed.", (unsigned long)cycle);
+    NSLog(@"[HostedVisibilitySmoke] cycle %lu passed: replacement remained hidden continuously and restored.",
+          (unsigned long)cycle);
     }
     for (NSRunningApplication *fixture in [NSRunningApplication runningApplicationsWithBundleIdentifier:fixtureBundleIdentifier]) {
         [fixture terminate];

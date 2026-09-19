@@ -20,6 +20,9 @@ final class HostedItemVisibilityManager: ObservableObject {
 
     private weak var appState: AppState?
     private var handle: UnsafeMutableRawPointer?
+    private var pendingHandle: UnsafeMutableRawPointer?
+    private var pendingConfiguration: HostedVisibilityPolicy.Configuration?
+    private var needsReactivation = false
     private var applied: HostedVisibilityPolicy.Configuration?
     private var lastFailed: HostedVisibilityPolicy.Configuration?
     private var generation = 0
@@ -58,7 +61,7 @@ final class HostedItemVisibilityManager: ObservableObject {
                 .sink { [weak self] _ in
                     HostedMenuBarBackend.invalidateEnumerationCache()
                     if name == NSWorkspace.didWakeNotification {
-                        self?.applied = nil
+                        self?.needsReactivation = true
                         self?.lastFailed = nil
                     }
                     self?.scheduleRefresh()
@@ -76,7 +79,7 @@ final class HostedItemVisibilityManager: ObservableObject {
                 guard let self, Date.now >= ignoreStateChangesUntil else { return }
                 // A Focus transition can invalidate the assertion. Ignore our
                 // own notifications to avoid a reactivation/reflow loop.
-                applied = nil
+                needsReactivation = true
                 lastFailed = nil
                 scheduleRefresh()
             }.store(in: &cancellables)
@@ -129,40 +132,61 @@ final class HostedItemVisibilityManager: ObservableObject {
             failureDescription = "Menu bar hiding is unavailable on this macOS version. Items remain visible."
             return
         }
-        if let applied, handle != nil,
+        // Serialize replacements. Changes arriving during activation are folded
+        // into the next refresh after completion rather than opening a gap.
+        guard pendingConfiguration == nil else { return }
+        if !needsReactivation, let applied, handle != nil,
            applied.concealed == desired.concealed,
            desired.allowed.isSubset(of: applied.allowed) { return }
         guard lastFailed != desired else { return }
-        releaseRestriction()
+        needsReactivation = false
         generation += 1
         let attempt = generation
+        pendingConfiguration = desired
         ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
-        handle = IceMenuBarVisibilityActivate(desired.allowed.sorted(), (0...8).map { NSNumber(value: $0) }) { [weak self] error in
+        // Keep the current restriction alive until its replacement is active.
+        // Releasing it first briefly reveals every hidden menu bar item.
+        pendingHandle = IceMenuBarVisibilityActivate(desired.allowed.sorted(), (0...8).map { NSNumber(value: $0) }) { [weak self] error in
             MainActor.assumeIsolated {
                 guard let self, self.generation == attempt, !self.isStopped else { return }
+                self.ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
                 if let error {
-                    self.releaseRestriction()
+                    if let pendingHandle = self.pendingHandle {
+                        IceMenuBarVisibilityInvalidate(pendingHandle)
+                    }
+                    self.pendingHandle = nil
+                    self.pendingConfiguration = nil
+                    // A failed replacement must not discard the working one.
+                    self.needsReactivation = true
                     self.recordActivationFailure(desired, description: error.localizedDescription)
                     self.logger.error("Visibility assertion failed: \(error.localizedDescription)")
+                    self.scheduleRefresh()
                 } else {
+                    let previousHandle = self.handle
+                    self.handle = self.pendingHandle
+                    self.pendingHandle = nil
+                    self.pendingConfiguration = nil
+                    self.applied = desired
+                    HostedMenuBarBackend.setConcealedBundleIdentifiers(desired.concealed)
+                    if let previousHandle {
+                        IceMenuBarVisibilityInvalidate(previousHandle)
+                    }
                     self.cancelActivationRetry()
                     self.lastFailed = nil
                     self.failureDescription = nil
                     HostedMenuBarBackend.invalidateEnumerationCache()
+                    self.scheduleRefresh()
                 }
             }
         }
-        if handle == nil {
-            // The Objective-C bridge also completes asynchronously on this path.
-            // Invalidate that callback so this failed attempt is counted once.
+        if pendingHandle == nil {
+            // The bridge also completes asynchronously on this path. Invalidate
+            // that callback so this failed attempt is counted only once.
             generation += 1
+            pendingConfiguration = nil
+            needsReactivation = true
             recordActivationFailure(desired, description: "macOS could not activate menu bar hiding.")
-        } else {
-            applied = desired
-            HostedMenuBarBackend.setConcealedBundleIdentifiers(desired.concealed)
-            lastFailed = nil
         }
-        HostedMenuBarBackend.invalidateEnumerationCache()
     }
 
     /// Reveal before reacquiring the AX element: hidden elements can disappear
@@ -245,12 +269,18 @@ final class HostedItemVisibilityManager: ObservableObject {
 
     private func releaseRestriction() {
         generation += 1
+        ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
+        if let pendingHandle {
+            IceMenuBarVisibilityInvalidate(pendingHandle)
+        }
         if let handle {
-            ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
             IceMenuBarVisibilityInvalidate(handle)
         }
+        pendingHandle = nil
+        pendingConfiguration = nil
         handle = nil
         applied = nil
+        needsReactivation = false
         HostedMenuBarBackend.setConcealedBundleIdentifiers([])
     }
 }
