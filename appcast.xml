@@ -1,0 +1,17 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Ice updates · thunder951413/ice</title>
+    <link>https://github.com/thunder951413/ice/releases</link>
+    <description>Signed Ice releases from thunder951413/ice.</description>
+    <item>
+      <title>Ice 0.12.0</title>
+      <pubDate>Sat, 19 Sep 2026 03:46:13 GMT</pubDate>
+      <sparkle:version>1125</sparkle:version>
+      <sparkle:shortVersionString>0.12.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description>See the GitHub Release for changes and compatibility notes.</description>
+      <enclosure url="https://api.github.com/repos/thunder951413/ice/releases/assets/574005791" length="4723016" type="application/octet-stream" sparkle:edSignature="6o4yMRe5ItZXhIl4+DchyixJbNXPTDtM3rzIJ1XFsD6ljoBPQA6BIatjXoDHxMV8jxEfJNumcThx/JWhCEanAw==" />
+    </item>
+  </channel>
+</rss>
