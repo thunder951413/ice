@@ -174,7 +174,12 @@ extension Defaults {
         // MARK: Ice Bar Settings
 
         case iceBarLocation = "IceBarLocation"
+        case iceBarStyle = "IceBarStyle"
+        case iceBarIconSize = "IceBarIconSize"
+        case iceBarItemSpacing = "IceBarItemSpacing"
+        case iceBarPadding = "IceBarPadding"
         case iceBarPinnedLocation = "IceBarPinnedLocation"
+        case hostedSectionAssignments = "HostedSectionAssignments"
 
         // MARK: Migration
 

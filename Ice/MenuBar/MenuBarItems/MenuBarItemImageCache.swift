@@ -39,6 +39,22 @@ final class MenuBarItemImageCache: ObservableObject {
     private func configureCancellables() {
         var c = Set<AnyCancellable>()
 
+        if HostedItemVisibilityManager.isSupported {
+            // Hosted previews use app icons. Keep sizing metadata current without
+            // a capture timer, permission checks, or repeated empty-image work.
+            screen = NSScreen.main
+            menuBarHeight = screen?.getMenuBarHeight()
+            NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.screen = NSScreen.main
+                    self?.menuBarHeight = self?.screen?.getMenuBarHeight()
+                }
+                .store(in: &c)
+            cancellables = c
+            return
+        }
+
         if let appState {
             Publishers.Merge3(
                 // Update every 3 seconds at minimum.
@@ -83,6 +99,7 @@ final class MenuBarItemImageCache: ObservableObject {
     /// the given section.
     @MainActor
     func cacheFailed(for section: MenuBarSection.Name) -> Bool {
+        if HostedItemVisibilityManager.isSupported { return false }
         guard ScreenCapture.cachedCheckPermissions() else {
             return true
         }
@@ -117,7 +134,11 @@ final class MenuBarItemImageCache: ObservableObject {
         var windowIDs = [CGWindowID]()
         var frame = CGRect.null
 
-        let hostedItems = items.filter { $0.hostedHandle != nil }
+        // MenuBarAgent's shared backing window omits hosted surfaces from CG
+        // window captures on macOS 27, yielding valid-sized blank images. Use
+        // application icons until a supported per-scene capture path exists.
+        let hostedItems = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+            ? [] : items.filter { $0.hostedHandle != nil }
         let legacyItems = items.filter { $0.hostedHandle == nil }
 
         for item in legacyItems {
@@ -193,7 +214,10 @@ final class MenuBarItemImageCache: ObservableObject {
         // On hosted menu bars, every AX item can resolve to the same backing
         // window. Capture that window through each item's screen rectangle.
         let hostedWindowIDs = Bridging.getWindowList(option: [.menuBarItems, .activeSpace])
-        for item in hostedItems {
+        let liveHostedItems = HostedMenuBarBackend.enumerate()
+        for cachedItem in hostedItems {
+            guard let handle = liveHostedItems.first(where: { "hosted:" + $0.stableID == cachedItem.stableID }) else { continue }
+            let item = MenuBarItem(hostedHandle: handle)
             let fallbackWindowID = hostedWindowIDs.first { windowID in
                 Bridging.getWindowFrame(for: windowID)?.intersects(item.frame) == true
             }
@@ -233,6 +257,7 @@ final class MenuBarItemImageCache: ObservableObject {
 
     /// Updates the cache for the given sections, without checking whether caching is necessary.
     func updateCacheWithoutChecks(sections: [MenuBarSection.Name]) async {
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 { return }
         guard
             let appState,
             let screen = NSScreen.main

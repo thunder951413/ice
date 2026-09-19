@@ -9,13 +9,16 @@ struct MenuBarLayoutSettingsPane: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        if !ScreenCapture.cachedCheckPermissions() {
+        if !HostedItemVisibilityManager.isSupported && !ScreenCapture.cachedCheckPermissions() {
             missingScreenRecordingPermission
         } else if appState.menuBarManager.isMenuBarHiddenBySystemUserDefaults {
             cannotArrange
         } else {
             IceForm(alignment: .leading, spacing: 20) {
                 header
+                if HostedItemVisibilityManager.isSupported {
+                    HostedVisibilityNotice(manager: appState.menuBarManager.hostedItemVisibilityManager)
+                }
                 layoutBars
             }
         }
@@ -23,7 +26,7 @@ struct MenuBarLayoutSettingsPane: View {
 
     @ViewBuilder
     private var header: some View {
-        Text("Drag to arrange your menu bar items")
+        Text(HostedItemVisibilityManager.isSupported ? "Choose menu bar item sections" : "Drag to arrange your menu bar items")
             .font(.title2)
 
         IceGroupBox {
@@ -32,7 +35,11 @@ struct MenuBarLayoutSettingsPane: View {
                 font: .callout.bold()
             ) {
                 Label {
-                    Text("Tip: you can also arrange menu bar items by Command + dragging them in the menu bar")
+                    if HostedItemVisibilityManager.isSupported {
+                        Text("On macOS 27, click a menu bar icon to choose its section. System icons cannot be assigned to hidden sections. Reorder icons directly in the menu bar with Command-drag.")
+                    } else {
+                        Text("Tip: you can also arrange menu bar items by Command + dragging them in the menu bar")
+                    }
                 } icon: {
                     Image(systemName: "lightbulb")
                 }
@@ -86,5 +93,19 @@ struct MenuBarLayoutSettingsPane: View {
                     .environmentObject(appState.imageCache)
             }
         }
+    }
+}
+
+private struct HostedVisibilityNotice: View {
+    @ObservedObject var manager: HostedItemVisibilityManager
+
+    var body: some View {
+        if let message = manager.failureDescription {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        }
+        Text("Click the Ice icon or empty menu bar space to show hidden items. Right-click for Ice settings. Some Apple menu extras may be unavailable while items are hidden; Show All Hidden Items restores them. App icons are used for previews; Screen Recording is optional.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
     }
 }

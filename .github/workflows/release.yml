@@ -1,0 +1,147 @@
+name: Publish prepared release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-publication-queue
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      REPOSITORY: thunder951413/ice
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Record the tagged commit
+        shell: bash
+        run: echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Wait for the locally prepared draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 300))
+          while (( SECONDS < deadline )); do
+            if gh release view "$TAG" --repo "$REPOSITORY" --json isDraft,assets,targetCommitish > release.json 2> release-error.log; then
+              draft=$(jq -r '.isDraft' release.json)
+              target=$(jq -r '.targetCommitish' release.json)
+              mapfile -t assets < <(jq -r '.assets[].name' release.json | sort)
+              if [[ "$target" != "$RELEASE_SHA" ]]; then
+                echo "Draft $TAG targets $target, but tag resolves to $RELEASE_SHA." >&2
+                exit 1
+              fi
+              if [[ " ${assets[*]} " == *" Ice.zip " && " ${assets[*]} " == *" appcast.xml " && " ${assets[*]} " == *" SHA256SUMS " ]]; then
+                echo "RELEASE_DRAFT=$draft" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "Timed out after 5 minutes waiting for draft $TAG with Ice.zip, appcast.xml, and SHA256SUMS." >&2
+          exit 1
+
+      - name: Download and verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          gh release download "$TAG" --repo "$REPOSITORY" --dir release-assets --pattern Ice.zip --pattern appcast.xml --pattern SHA256SUMS
+          python3 Scripts/verify-release.py \
+            --tag "$TAG" \
+            --zip release-assets/Ice.zip \
+            --appcast release-assets/appcast.xml \
+            --sha256sums release-assets/SHA256SUMS \
+            --info-plist Ice/Info.plist
+
+      - name: Decide feed and latest-release behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          new_build=$(python3 Scripts/verify-release.py --print-appcast-build --appcast release-assets/appcast.xml)
+          if gh api "repos/$REPOSITORY/contents/appcast.xml?ref=updates" > existing-appcast.json 2> existing-appcast-error.log; then
+            jq -r '.content' existing-appcast.json | tr -d '\n' | base64 --decode > existing-appcast.xml
+            old_build=$(python3 Scripts/verify-release.py --print-appcast-build --appcast existing-appcast.xml)
+            if (( new_build > old_build )); then
+              echo "PUBLISH_FEED=true" >> "$GITHUB_ENV"
+              echo "LATEST_ARGUMENT=--latest" >> "$GITHUB_ENV"
+            elif (( new_build < old_build )); then
+              echo "PUBLISH_FEED=false" >> "$GITHUB_ENV"
+              echo "LATEST_ARGUMENT=--latest=false" >> "$GITHUB_ENV"
+            else
+              echo "PUBLISH_FEED=false" >> "$GITHUB_ENV"
+              echo "LATEST_ARGUMENT=" >> "$GITHUB_ENV"
+            fi
+          elif grep -q '404' existing-appcast-error.log; then
+            echo "PUBLISH_FEED=true" >> "$GITHUB_ENV"
+            echo "LATEST_ARGUMENT=--latest" >> "$GITHUB_ENV"
+          else
+            cat existing-appcast-error.log >&2
+            exit 1
+          fi
+
+      - name: Publish the verified draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_DRAFT" == true ]]; then
+            if [[ -n "$LATEST_ARGUMENT" ]]; then
+              gh release edit "$TAG" --repo "$REPOSITORY" --draft=false "$LATEST_ARGUMENT"
+            else
+              gh release edit "$TAG" --repo "$REPOSITORY" --draft=false
+            fi
+          else
+            echo "Release $TAG is already published; continuing with feed repair."
+          fi
+
+      - name: Publish appcast to the updates branch when it is newer
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH_FEED" != true ]]; then
+            echo "The updates feed is already as new or newer; leaving it unchanged."
+            exit 0
+          fi
+          if gh api "repos/$REPOSITORY/git/ref/heads/updates" > updates-ref.json 2> updates-ref-error.log; then
+            :
+          elif grep -q '404' updates-ref-error.log; then
+            jq -n --arg ref refs/heads/updates --arg sha "$RELEASE_SHA" '{ref: $ref, sha: $sha}' > create-ref.json
+            gh api --method POST "repos/$REPOSITORY/git/refs" --input create-ref.json > /dev/null
+          else
+            cat updates-ref-error.log >&2
+            exit 1
+          fi
+
+          file_sha=''
+          if gh api "repos/$REPOSITORY/contents/appcast.xml?ref=updates" > existing-appcast.json 2> existing-appcast-error.log; then
+            file_sha=$(jq -r '.sha' existing-appcast.json)
+          elif ! grep -q '404' existing-appcast-error.log; then
+            cat existing-appcast-error.log >&2
+            exit 1
+          fi
+
+          content=$(base64 --wrap=0 release-assets/appcast.xml)
+          if [[ -n "$file_sha" ]]; then
+            jq -n --arg message "Publish appcast for $TAG" --arg content "$content" --arg branch updates --arg sha "$file_sha" '{message: $message, content: $content, branch: $branch, sha: $sha}' > put-appcast.json
+          else
+            jq -n --arg message "Publish appcast for $TAG" --arg content "$content" --arg branch updates '{message: $message, content: $content, branch: $branch}' > put-appcast.json
+          fi
+          gh api --method PUT "repos/$REPOSITORY/contents/appcast.xml" --input put-appcast.json > /dev/null

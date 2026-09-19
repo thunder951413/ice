@@ -74,6 +74,9 @@ struct GeneralSettingsPane: View {
             IceSection {
                 spacingOptions
             }
+            IceSection {
+                recoverOptions
+            }
         }
         .alert(isPresented: $isPresentingError, error: presentedError) {
             Button("OK") {
@@ -178,6 +181,9 @@ struct GeneralSettingsPane: View {
         useIceBar
         if manager.useIceBar {
             iceBarLocationPicker
+            iceBarStylePicker
+            iceBarSizingOptions
+            showIceBarButton
         }
     }
 
@@ -203,6 +209,75 @@ struct GeneralSettingsPane: View {
             case .iceIcon:
                 Text("The Ice Bar is centered below the Ice icon")
             }
+        }
+    }
+
+    @ViewBuilder
+    private var iceBarStylePicker: some View {
+        IcePicker("Appearance", selection: manager.bindings.iceBarStyle) {
+            ForEach(IceBarStyle.allCases) { style in
+                Text(style.localized).tag(style)
+            }
+        }
+        .annotation("The Ice Bar's appearance is independent of the menu bar background")
+    }
+
+    @ViewBuilder
+    private var iceBarSizingOptions: some View {
+        IceLabeledContent {
+            HStack(spacing: 10) {
+                SwiftUI.Slider(value: manager.bindings.iceBarIconSize, in: 16...36, step: 1)
+                    .labelsHidden()
+                    .accessibilityLabel("Icon size")
+                Text("\(manager.iceBarIconSize.formatted()) pt")
+                    .monospacedDigit()
+                    .frame(width: 42, alignment: .trailing)
+            }
+            .frame(width: 240)
+        } label: {
+            Text("Icon size")
+        }
+
+        IceLabeledContent {
+            HStack(spacing: 10) {
+                SwiftUI.Slider(value: manager.bindings.iceBarItemSpacing, in: 0...12, step: 1)
+                    .labelsHidden()
+                    .accessibilityLabel("Icon spacing")
+                Text("\(manager.iceBarItemSpacing.formatted()) pt")
+                    .monospacedDigit()
+                    .frame(width: 42, alignment: .trailing)
+            }
+            .frame(width: 240)
+        } label: {
+            Text("Icon spacing")
+        }
+
+        IceLabeledContent {
+            HStack(spacing: 10) {
+                SwiftUI.Slider(value: manager.bindings.iceBarPadding, in: 2...12, step: 1)
+                    .labelsHidden()
+                    .accessibilityLabel("Background padding")
+                Text("\(manager.iceBarPadding.formatted()) pt")
+                    .monospacedDigit()
+                    .frame(width: 42, alignment: .trailing)
+            }
+            .frame(width: 240)
+        } label: {
+            Text("Background padding")
+        }
+
+        Button("Reset sizes") {
+            manager.iceBarIconSize = 28
+            manager.iceBarItemSpacing = 2
+            manager.iceBarPadding = 4
+        }
+        .annotation("Adjust the Ice Bar's icon and background dimensions")
+    }
+
+    @ViewBuilder
+    private var showIceBarButton: some View {
+        Button("Show Ice Bar") {
+            appState.menuBarManager.section(withName: .hidden)?.show()
         }
     }
 
@@ -281,6 +356,20 @@ struct GeneralSettingsPane: View {
         .onAppear {
             tempItemSpacingOffset = manager.itemSpacingOffset
         }
+    }
+
+    @ViewBuilder
+    private var recoverOptions: some View {
+        IceLabeledContent {
+            Button("Show All Hidden Items") {
+                appState.menuBarManager.resetModifications()
+            }
+        } label: {
+            Text("Recover hidden items")
+        }
+        .annotation(
+            "Reveals every item Ice is hiding and restores the default spacing. Use this if menu bar items have become invisible."
+        )
     }
 
     @ViewBuilder

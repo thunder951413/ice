@@ -8,6 +8,7 @@ import SwiftUI
 struct AboutSettingsPane: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
+    @State private var githubToken = ""
 
     private var updatesManager: UpdatesManager {
         appState.updatesManager
@@ -20,7 +21,7 @@ struct AboutSettingsPane: View {
 
     private var contributeURL: URL {
         // swiftlint:disable:next force_unwrapping
-        URL(string: "https://github.com/jordanbaird/Ice")!
+        URL(string: "https://github.com/thunder951413/ice")!
     }
 
     private var issuesURL: URL {
@@ -61,7 +62,7 @@ struct AboutSettingsPane: View {
             updatesSection
                 .layoutPriority(1)
         }
-        .scrollDisabled(true)
+        .scrollDisabled(false)
         .frame(maxHeight: 500)
         .background(.quinary, in: RoundedRectangle(cornerRadius: 20, style: .circular))
     }
@@ -99,6 +100,7 @@ struct AboutSettingsPane: View {
         IceSection(options: .hasDividers) {
             automaticallyCheckForUpdates
             automaticallyDownloadUpdates
+            githubUpdateToken
             if updatesManager.canCheckForUpdates {
                 checkForUpdates
             }
@@ -120,6 +122,51 @@ struct AboutSettingsPane: View {
             "Automatically download updates",
             isOn: updatesManager.bindings.automaticallyDownloadsUpdates
         )
+    }
+
+    @ViewBuilder
+    private var githubUpdateToken: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("GitHub updates")
+                .font(.headline)
+            Text("Private repositories need a token with Contents read access. Stored only in Keychain.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                SecureField("GitHub token (optional)", text: $githubToken)
+                    .onChange(of: githubToken) {
+                        updatesManager.clearGitHubUpdateTokenError()
+                    }
+                Button(updatesManager.hasGitHubUpdateToken ? "Replace" : "Save") {
+                    let token = githubToken.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !token.isEmpty else {
+                        return
+                    }
+                    updatesManager.saveGitHubUpdateToken(token)
+                    if updatesManager.githubUpdateTokenError == nil {
+                        githubToken = ""
+                    }
+                }
+                .disabled(githubToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if updatesManager.hasGitHubUpdateToken {
+                    Button("Remove") {
+                        updatesManager.removeGitHubUpdateToken()
+                    }
+                }
+            }
+
+            if updatesManager.hasGitHubUpdateToken {
+                Text("A token is configured for private GitHub update access.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = updatesManager.githubUpdateTokenError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
     }
 
     @ViewBuilder

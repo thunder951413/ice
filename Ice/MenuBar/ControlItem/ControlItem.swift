@@ -55,17 +55,18 @@ final class ControlItem {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
-    /// Content rendered directly in the hosted button view hierarchy.
-    private var hostedContentView: NSView?
-
     /// Global monitor used because MenuBarAgent does not forward hosted status
     /// item mouse events to the owning process on newer systems.
     private var hostedClickMonitor: Any?
 
+    /// The last time the Ice icon toggled its section, used to coalesce bursts
+    /// of toggle requests from the button action and the hosted click monitor.
+    private var lastToggleDate = Date.distantPast
+
     /// Newer systems host all status items in a shared menu bar scene. Expanding
     /// a divider there resizes the shared host instead of an isolated item.
     private var usesHostedMenuBar: Bool {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
 
     /// The menu bar section associated with the control item.
@@ -89,39 +90,16 @@ final class ControlItem {
                     return
                 }
                 button.setAccessibilityIdentifier(identifier.rawValue)
-                button.setAccessibilityRole(.button)
                 button.target = self
                 button.action = #selector(performAction)
+                if #available(macOS 27, *) {
+                    button.addTarget(self, action: #selector(performHostedPrimaryAction), for: .primaryActionTriggered)
+                }
                 let useIceBar = appState?.settingsManager.generalSettingsManager.useIceBar ?? false
                 button.sendAction(on: useIceBar ? [.leftMouseDown, .rightMouseUp] : [.leftMouseUp, .rightMouseUp])
                 button.isEnabled = true
                 updateStatusItem(with: state)
                 isVisible = isVisible
-                guard hostedContentView?.superview !== button else {
-                    return
-                }
-                hostedContentView?.removeFromSuperview()
-                let label = HostedControlLabel(labelWithString: "❄︎")
-                label.translatesAutoresizingMaskIntoConstraints = false
-                label.font = .systemFont(ofSize: 14, weight: .semibold)
-                label.textColor = .white
-                label.alignment = .center
-                label.setAccessibilityElement(false)
-                label.onLeftClick = { [weak self] in
-                    self?.section?.toggle()
-                }
-                label.onRightClick = { [weak self] in
-                    guard let self, let appState else {
-                        return
-                    }
-                    statusItem.showMenu(createMenu(with: appState))
-                }
-                button.addSubview(label)
-                NSLayoutConstraint.activate([
-                    label.centerXAnchor.constraint(equalTo: button.centerXAnchor),
-                    label.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-                ])
-                hostedContentView = label
             }
         }
     }
@@ -153,18 +131,17 @@ final class ControlItem {
     /// displayed in the menu bar.
     var isAddedToMenuBar: Bool {
         if isVirtualHostedDivider {
-            return true
+            return identifier != .alwaysHidden
+                || appState?.settingsManager.advancedSettingsManager.enableAlwaysHiddenSection == true
         }
         return statusItem.isVisible
     }
 
     /// Creates a control item with the given identifier and app state.
     init(identifier: Identifier, appState: AppState) {
-        let hosted = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26
+        let hosted = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
         let isVirtualHostedDivider = hosted && identifier != .iceIcon
-        let autosaveName = hosted && identifier == .iceIcon
-            ? "\(identifier.rawValue)-HostedV6"
-            : identifier.rawValue
+        let autosaveName = identifier.rawValue
 
         // If the status item doesn't have a preferred position, set it
         // according to the identifier.
@@ -184,7 +161,7 @@ final class ControlItem {
 
         self.statusItem = isVirtualHostedDivider
             ? NSStatusItem()
-            : NSStatusBar.system.statusItem(withLength: hosted ? 33 : 0)
+            : NSStatusBar.system.statusItem(withLength: hosted ? NSStatusItem.variableLength : 0)
         if !isVirtualHostedDivider {
             self.statusItem.autosaveName = autosaveName
         }
@@ -247,58 +224,56 @@ final class ControlItem {
             else {
                 return
             }
-            let systemWide = AXUIElementCreateSystemWide()
-            var element: AXUIElement?
-            guard
-                AXUIElementCopyElementAtPosition(
-                    systemWide,
-                    Float(point.x),
-                    Float(point.y),
-                    &element
-                ) == .success,
-                let element
-            else {
-                return
-            }
-            var pid: pid_t = 0
-            AXUIElementGetPid(element, &pid)
-            var identifierValue: CFTypeRef?
-            AXUIElementCopyAttributeValue(
-                element,
-                kAXIdentifierAttribute as CFString,
-                &identifierValue
-            )
-            let hitIdentifier = identifierValue as? String
-            if point.y <= NSStatusBar.system.thickness + 4 {
-                Logger.controlItem.info(
-                    "Hosted menu click: type=\(String(describing: event.type)), " +
-                    "pid=\(pid), identifier=\(hitIdentifier ?? "nil"), " +
-                    "point=\(NSStringFromPoint(point))"
-                )
-            }
-            guard
-                pid == ProcessInfo.processInfo.processIdentifier
-                    || hitIdentifier == Identifier.iceIcon.rawValue
-            else {
-                return
-            }
+
+            guard NSScreen.screens.contains(where: { screen in
+                let bounds = CGDisplayBounds(screen.displayID)
+                return point.x >= bounds.minX && point.x <= bounds.maxX
+                    && point.y >= bounds.minY
+                    && point.y <= bounds.minY + max(NSStatusBar.system.thickness, screen.safeAreaInsets.top) + 4
+            }) else { return }
+
+            // Share the same host snapshot as empty-space hit testing. A global
+            // AX hit test can resolve a stale proxy or another process's icon.
+            let iceIconHit = HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier)
+                .contains { frame in
+                    frame.insetBy(dx: -2, dy: -4).contains(point)
+                }
+            guard iceIconHit else { return }
+
             Task { @MainActor [weak self] in
                 guard let self else {
                     return
                 }
                 switch event.type {
                 case .leftMouseDown:
-                    section?.toggle()
+                    debouncedToggle()
                 case .rightMouseDown:
                     guard let appState else {
                         return
                     }
-                    statusItem.showMenu(createMenu(with: appState))
+                    // NSStatusItem.showMenu does not open on hosted menu bars,
+                    // where menu tracking belongs to the system host process.
+                    // Pop the same menu directly at the mouse location.
+                    createMenu(with: appState)
+                        .popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
                 default:
                     break
                 }
             }
         }
+    }
+
+    /// Toggles the associated section, coalescing bursts of toggle requests that
+    /// can arrive from both the status item's button action and the hosted click
+    /// monitor for a single physical click.
+    private func debouncedToggle() {
+        let now = Date.now
+        guard now.timeIntervalSince(lastToggleDate) > 0.3 else {
+            Logger.controlItem.debug("Ignoring duplicate Ice icon toggle within debounce window")
+            return
+        }
+        lastToggleDate = now
+        section?.toggle()
     }
 
     /// Configures the internal observers for the control item.
@@ -325,9 +300,13 @@ final class ControlItem {
                     }
                     // Never resize or remove the real member of the shared
                     // hosted scene. Dividers are virtual on this path.
-                    statusItem.isVisible = true
+                    if !isVisible {
+                        removeFromMenuBar()
+                        return
+                    }
+                    if !statusItem.isVisible { statusItem.isVisible = true }
                     statusItem.length = switch section.name {
-                    case .visible: isVisible ? 33 : 1
+                    case .visible: isVisible ? Lengths.standard : 1
                     case .hidden, .alwaysHidden: isVisible ? Lengths.standard : 1
                     }
                     return
@@ -505,9 +484,11 @@ final class ControlItem {
             return
         }
         button.setAccessibilityIdentifier(identifier.rawValue)
-        button.setAccessibilityRole(.button)
         button.target = self
         button.action = #selector(performAction)
+        if #available(macOS 27, *) {
+            button.addTarget(self, action: #selector(performHostedPrimaryAction), for: .primaryActionTriggered)
+        }
     }
 
     /// Updates the appearance of the status item using the given hiding state.
@@ -522,12 +503,9 @@ final class ControlItem {
 
         switch section.name {
         case .visible:
-            isVisible = true
+            isVisible = appState.settingsManager.generalSettingsManager.showIceIcon
             // Enable the cell, as it may have been previously disabled.
             button.cell?.isEnabled = true
-            if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 {
-                button.contentTintColor = .white
-            }
             let icon = appState.settingsManager.generalSettingsManager.iceIcon
             // We can usually just set the image directly from the icon.
             button.image = switch state {
@@ -578,7 +556,7 @@ final class ControlItem {
         guard let event = NSApp.currentEvent else {
             // Hosted menu bar accessibility presses do not install an AppKit
             // event, but they still invoke this button action.
-            section?.toggle()
+            debouncedToggle()
             return
         }
         switch event.type {
@@ -593,14 +571,18 @@ final class ControlItem {
                     alwaysHiddenSection.toggle()
                 }
             } else {
-                section?.toggle()
+                debouncedToggle()
             }
         case .rightMouseUp:
             statusItem.showMenu(createMenu(with: appState))
         default:
             // MenuBarAgent forwards AXPress as an application-defined event.
-            section?.toggle()
+            debouncedToggle()
         }
+    }
+
+    @objc private func performHostedPrimaryAction() {
+        debouncedToggle()
     }
 
     /// Creates a menu to show under the control item.
@@ -753,29 +735,6 @@ final class ControlItem {
         let cached = StatusItemDefaults[.preferredPosition, autosaveName]
         statusItem.isVisible = false
         StatusItemDefaults[.preferredPosition, autosaveName] = cached
-    }
-}
-
-/// Visual content for a hosted status button that leaves all mouse and
-/// accessibility hit testing to the underlying `NSStatusBarButton`.
-private final class HostedControlLabel: NSTextField {
-    var onLeftClick: (() -> Void)?
-    var onRightClick: (() -> Void)?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        self
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onLeftClick?()
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        onRightClick?()
     }
 }
 

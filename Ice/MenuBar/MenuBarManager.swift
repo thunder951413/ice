@@ -40,6 +40,9 @@ final class MenuBarManager: ObservableObject {
     /// The panel that contains the menu bar search interface.
     let searchPanel: MenuBarSearchPanel
 
+    /// Native visibility backend for status items hosted by MenuBarAgent.
+    let hostedItemVisibilityManager: HostedItemVisibilityManager
+
     /// A Boolean value that indicates whether the manager can update its stored
     /// information for the menu bar's average color.
     private var canUpdateAverageColorInfo: Bool {
@@ -50,6 +53,7 @@ final class MenuBarManager: ObservableObject {
     init(appState: AppState) {
         self.iceBarPanel = IceBarPanel(appState: appState)
         self.searchPanel = MenuBarSearchPanel(appState: appState)
+        self.hostedItemVisibilityManager = HostedItemVisibilityManager(appState: appState)
         self.appState = appState
     }
 
@@ -58,6 +62,7 @@ final class MenuBarManager: ObservableObject {
         initializeSections()
         configureCancellables()
         iceBarPanel.performSetup()
+        hostedItemVisibilityManager.performSetup()
     }
 
     /// Performs the initial setup of the menu bar manager's sections.
@@ -325,6 +330,48 @@ final class MenuBarManager: ObservableObject {
         return applicationMenuFrame
     }
 
+    /// Reveals every menu bar item that Ice is currently hiding.
+    ///
+    /// Ice hides items by moving its control-item dividers so the real items
+    /// end up in a hidden or always-hidden region of the menu bar. When items
+    /// get stranded there (and stay hidden across relaunches), forcing every
+    /// control item into the ``ControlItem/State/showItems`` state pushes all of
+    /// them back into view without requiring a synthetic drag.
+    func showAllSections() {
+        Logger.menuBarManager.info("Showing all sections to reveal hidden items")
+        iceBarPanel.close()
+        for section in sections {
+            section.controlItem.state = .showItems
+        }
+    }
+
+    /// Resets Ice's runtime menu bar modifications so that every managed item
+    /// becomes visible again.
+    ///
+    /// This reveals all sections and restores the menu bar item spacing to the
+    /// system default (a negative spacing offset can make items overlap and
+    /// appear invisible). It does not touch the user's other preferences.
+    func resetModifications() {
+        Logger.menuBarManager.info("Resetting Ice menu bar modifications")
+        showAllSections()
+        guard let appState else {
+            return
+        }
+        appState.itemManager.resetHostedSectionAssignments()
+        hostedItemVisibilityManager.restoreAll()
+        if appState.settingsManager.generalSettingsManager.itemSpacingOffset != 0 {
+            appState.settingsManager.generalSettingsManager.itemSpacingOffset = 0
+            Task {
+                do {
+                    try await appState.spacingManager.applyOffset()
+                } catch {
+                    Logger.menuBarManager.error("Error resetting item spacing: \(error)")
+                }
+            }
+        }
+    }
+
+
     /// Shows the right-click menu.
     func showRightClickMenu(at point: CGPoint) {
         let menu = NSMenu(title: "Ice")
@@ -336,6 +383,14 @@ final class MenuBarManager: ObservableObject {
         )
         editItem.target = self
         menu.addItem(editItem)
+
+        let showAllItem = NSMenuItem(
+            title: "Show All Hidden Items",
+            action: #selector(showAllSectionsAction),
+            keyEquivalent: ""
+        )
+        showAllItem.target = self
+        menu.addItem(showAllItem)
 
         menu.addItem(.separator())
 
@@ -378,6 +433,12 @@ final class MenuBarManager: ObservableObject {
         } else {
             hideApplicationMenus()
         }
+    }
+
+    /// Reveals all hidden items. Wraps ``showAllSections()`` for use as a menu
+    /// item action.
+    @objc private func showAllSectionsAction() {
+        resetModifications()
     }
 
     /// Shows the appearance editor popover, centered under the menu bar.

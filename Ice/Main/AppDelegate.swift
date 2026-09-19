@@ -76,8 +76,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Deactivate and set the policy to accessory when all windows are closed.
-        appState?.deactivate(withPolicy: .accessory)
+        if HostedItemVisibilityManager.isSupported {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            appState?.deactivate(withPolicy: .accessory)
+        }
         return false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appState?.menuBarManager.hostedItemVisibilityManager.restoreAll(stop: true)
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {

@@ -30,6 +30,18 @@ final class GeneralSettingsManager: ObservableObject {
     /// The location where the Ice Bar appears.
     @Published var iceBarLocation: IceBarLocation = .dynamic
 
+    /// The appearance of the Ice Bar.
+    @Published var iceBarStyle: IceBarStyle = .frosted
+
+    /// The size of icons in the Ice Bar.
+    @Published var iceBarIconSize: Double = 28
+
+    /// The spacing between icons in the Ice Bar.
+    @Published var iceBarItemSpacing: Double = 2
+
+    /// The padding around the Ice Bar background.
+    @Published var iceBarPadding: Double = 4
+
     /// A Boolean value that indicates whether the hidden section
     /// should be shown when the mouse pointer clicks in an empty
     /// area of the menu bar.
@@ -88,12 +100,18 @@ final class GeneralSettingsManager: ObservableObject {
         Defaults.ifPresent(key: .showOnHover, assign: &showOnHover)
         Defaults.ifPresent(key: .showOnScroll, assign: &showOnScroll)
         Defaults.ifPresent(key: .itemSpacingOffset, assign: &itemSpacingOffset)
+        loadIceBarSizingPreferences()
         Defaults.ifPresent(key: .autoRehide, assign: &autoRehide)
         Defaults.ifPresent(key: .rehideInterval, assign: &rehideInterval)
 
         Defaults.ifPresent(key: .iceBarLocation) { rawValue in
             if let location = IceBarLocation(rawValue: rawValue) {
                 iceBarLocation = location
+            }
+        }
+        Defaults.ifPresent(key: .iceBarStyle) { rawValue in
+            if let style = IceBarStyle(rawValue: rawValue) {
+                iceBarStyle = style
             }
         }
         Defaults.ifPresent(key: .rehideStrategy) { rawValue in
@@ -112,6 +130,29 @@ final class GeneralSettingsManager: ObservableObject {
                 lastCustomIceIcon = iceIcon
             }
         }
+    }
+
+    private func loadIceBarSizingPreferences() {
+        Defaults.ifPresent(key: .iceBarIconSize) { (value: Double) in
+            iceBarIconSize = clampedIceBarValue(value, in: 16...36, defaultValue: 28)
+        }
+        Defaults.ifPresent(key: .iceBarItemSpacing) { (value: Double) in
+            iceBarItemSpacing = clampedIceBarValue(value, in: 0...12, defaultValue: 2)
+        }
+        Defaults.ifPresent(key: .iceBarPadding) { (value: Double) in
+            iceBarPadding = clampedIceBarValue(value, in: 2...12, defaultValue: 4)
+        }
+    }
+
+    private func clampedIceBarValue(
+        _ value: Double,
+        in range: ClosedRange<Double>,
+        defaultValue: Double
+    ) -> Double {
+        guard value.isFinite else {
+            return defaultValue
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
     }
 
     private func configureCancellables() {
@@ -170,6 +211,34 @@ final class GeneralSettingsManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { location in
                 Defaults.set(location.rawValue, forKey: .iceBarLocation)
+            }
+            .store(in: &c)
+
+        $iceBarStyle
+            .receive(on: DispatchQueue.main)
+            .sink { style in
+                Defaults.set(style.rawValue, forKey: .iceBarStyle)
+            }
+            .store(in: &c)
+
+        $iceBarIconSize
+            .receive(on: DispatchQueue.main)
+            .sink { size in
+                Defaults.set(size, forKey: .iceBarIconSize)
+            }
+            .store(in: &c)
+
+        $iceBarItemSpacing
+            .receive(on: DispatchQueue.main)
+            .sink { spacing in
+                Defaults.set(spacing, forKey: .iceBarItemSpacing)
+            }
+            .store(in: &c)
+
+        $iceBarPadding
+            .receive(on: DispatchQueue.main)
+            .sink { padding in
+                Defaults.set(padding, forKey: .iceBarPadding)
             }
             .store(in: &c)
 

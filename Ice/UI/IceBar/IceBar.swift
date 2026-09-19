@@ -12,10 +12,14 @@ final class IceBarPanel: NSPanel {
     private weak var appState: AppState?
 
     private(set) var currentSection: MenuBarSection.Name?
-
-    private lazy var colorManager = IceBarColorManager(iceBarPanel: self)
+    private(set) var presentationGeneration = 0
 
     private var cancellables = Set<AnyCancellable>()
+    private lazy var escapeMonitor = UniversalEventMonitor(mask: .keyDown) { [weak self] event in
+        guard let self, self.isVisible, event.keyCode == KeyCode.escape.rawValue else { return event }
+        self.close()
+        return nil
+    }
 
     init(appState: AppState) {
         super.init(
@@ -32,6 +36,7 @@ final class IceBarPanel: NSPanel {
         self.isFloatingPanel = true
         self.animationBehavior = .none
         self.backgroundColor = .clear
+        self.isOpaque = false
         self.hasShadow = false
         self.level = .mainMenu + 1
         self.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle, .moveToActiveSpace]
@@ -126,7 +131,7 @@ final class IceBarPanel: NSPanel {
                 return getOrigin(for: .iceIcon)
             case .mousePointer:
                 guard let location = MouseCursor.locationAppKit else {
-                    return getOrigin(for: .iceIcon)
+                    return originForRightOfScreen
                 }
 
                 let lowerBound = screen.frame.minX
@@ -138,6 +143,18 @@ final class IceBarPanel: NSPanel {
 
                 return CGPoint(x: (location.x - frame.width / 2).clamped(to: lowerBound...upperBound), y: originY)
             case .iceIcon:
+                // Anchor to the actual hosted icon when it exists. Its source
+                // window is shared or stale; fall back to the click location.
+                if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+                    let displayBounds = CGDisplayBounds(screen.displayID)
+                    if let icon = HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier)
+                        .first(where: { $0.intersects(displayBounds) }), frame.width <= screen.frame.width {
+                        return CGPoint(x: (icon.midX - frame.width / 2)
+                            .clamped(to: screen.frame.minX...(screen.frame.maxX - frame.width)), y: originY)
+                    }
+                    return getOrigin(for: .mousePointer)
+                }
+
                 let lowerBound = screen.frame.minX
                 let upperBound = screen.frame.maxX - frame.width
 
@@ -166,25 +183,19 @@ final class IceBarPanel: NSPanel {
         guard let appState else {
             return
         }
-        Logger.iceBar.info("Showing \(section.logString) with \(appState.itemManager.itemCache[section].count) cached items")
-
+        presentationGeneration += 1
         // Important that we set the navigation state and current section before updating the cache.
         appState.navigationState.isIceBarPresented = true
         currentSection = section
 
-        contentView = IceBarHostingView(appState: appState, colorManager: colorManager, screen: screen, section: section) { [weak self] in
+        contentView = IceBarHostingView(appState: appState, screen: screen, section: section) { [weak self] in
             self?.close()
         }
 
         updateOrigin(for: screen)
 
-        // Color manager must be updated after updating the panel's origin, but before it is shown.
-        //
-        // Color manager handles frame changes automatically, but does so on the main queue, so we
-        // need to update manually once before showing the panel to prevent the color from flashing.
-        colorManager.updateAllProperties(with: frame, screen: screen)
-
         orderFrontRegardless()
+        escapeMonitor.start()
 
         // Do not block presentation on AX enumeration and shared-window screen
         // capture. The current logical cache is immediately usable, and the
@@ -196,6 +207,8 @@ final class IceBarPanel: NSPanel {
     }
 
     override func close() {
+        presentationGeneration += 1
+        escapeMonitor.stop()
         super.close()
         contentView = nil
         currentSection = nil
@@ -212,7 +225,6 @@ private final class IceBarHostingView: NSHostingView<AnyView> {
 
     init(
         appState: AppState,
-        colorManager: IceBarColorManager,
         screen: NSScreen,
         section: MenuBarSection.Name,
         closePanel: @escaping () -> Void
@@ -223,7 +235,7 @@ private final class IceBarHostingView: NSHostingView<AnyView> {
                 .environmentObject(appState.imageCache)
                 .environmentObject(appState.itemManager)
                 .environmentObject(appState.menuBarManager)
-                .environmentObject(colorManager)
+                .environmentObject(appState.settingsManager.generalSettingsManager)
                 .erasedToAnyView()
         )
     }
@@ -247,7 +259,7 @@ private final class IceBarHostingView: NSHostingView<AnyView> {
 
 private struct IceBarContentView: View {
     @EnvironmentObject var appState: AppState
-    @EnvironmentObject var colorManager: IceBarColorManager
+    @EnvironmentObject var settings: GeneralSettingsManager
     @EnvironmentObject var itemManager: MenuBarItemManager
     @EnvironmentObject var imageCache: MenuBarItemImageCache
     @EnvironmentObject var menuBarManager: MenuBarManager
@@ -262,62 +274,43 @@ private struct IceBarContentView: View {
         itemManager.itemCache.managedItems(for: section)
     }
 
-    private var configuration: MenuBarAppearanceConfigurationV2 {
-        appState.appearanceManager.configuration
-    }
-
-    private var horizontalPadding: CGFloat {
-        configuration.hasRoundedShape ? 7 : 5
-    }
-
-    private var verticalPadding: CGFloat {
-        screen.hasNotch ? 0 : 2
-    }
-
-    private var contentHeight: CGFloat? {
-        guard let menuBarHeight = imageCache.menuBarHeight ?? screen.getMenuBarHeight() else {
-            return nil
-        }
-        if configuration.shapeKind != .none && configuration.isInset && screen.hasNotch {
-            return menuBarHeight - appState.appearanceManager.menuBarInsetAmount * 2
-        }
-        return menuBarHeight
-    }
-
-    private var clipShape: AnyInsettableShape {
-        if configuration.hasRoundedShape {
-            AnyInsettableShape(Capsule())
-        } else {
-            AnyInsettableShape(RoundedRectangle(cornerRadius: frame.height / 5, style: .continuous))
-        }
-    }
-
-    private var shadowOpacity: CGFloat {
-        configuration.current.hasShadow ? 0.5 : 0.33
-    }
+    private var availableWidth: CGFloat { max(160, screen.frame.width - 32) }
 
     var body: some View {
-        ZStack {
-            content
-                .frame(height: contentHeight)
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, verticalPadding)
-                .layoutBarStyle(appState: appState, averageColorInfo: colorManager.colorInfo)
-                .foregroundStyle(colorManager.colorInfo?.color.brightness ?? 0 > 0.67 ? .black : .white)
-                .clipShape(clipShape)
-                .shadow(color: .black.opacity(shadowOpacity), radius: 2.5)
-
-            if configuration.current.hasBorder {
-                clipShape
-                    .inset(by: configuration.current.borderWidth / 2)
-                    .stroke(lineWidth: configuration.current.borderWidth)
-                    .foregroundStyle(Color(cgColor: configuration.current.borderColor))
+        content
+            .frame(minHeight: settings.iceBarIconSize + 4)
+            .padding(.horizontal, settings.iceBarPadding + 2)
+            .padding(.vertical, settings.iceBarPadding)
+            .foregroundStyle(.primary)
+            .background { IceBarSurface(style: settings.iceBarStyle) }
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("Search menu bar items…", action: openSearch)
+                Button("Arrange hidden items…") { openSettings(.menuBarLayout) }
+                Button("Ice Bar settings…") { openSettings(.general) }
+                Divider()
+                Button("Show All Hidden Items") {
+                    closePanel()
+                    menuBarManager.resetModifications()
+                }
+                Divider()
+                Button("Close Ice Bar", action: closePanel)
             }
-        }
-        .padding(5)
-        .frame(maxWidth: imageCache.screen?.frame.width)
-        .fixedSize()
-        .onFrameChange(update: $frame)
+            .padding(8) // Transparent space for the compact shadow.
+            .frame(maxWidth: availableWidth)
+            .fixedSize()
+            .onFrameChange(update: $frame)
+    }
+
+    private func openSearch() {
+        closePanel()
+        Task { await menuBarManager.searchPanel.show(on: screen) }
+    }
+
+    private func openSettings(_ pane: SettingsNavigationIdentifier) {
+        closePanel()
+        appState.navigationState.settingsNavigationIdentifier = pane
+        appState.appDelegate?.openSettingsWindow()
     }
 
     @ViewBuilder
@@ -325,15 +318,20 @@ private struct IceBarContentView: View {
         if menuBarManager.isMenuBarHiddenBySystemUserDefaults {
             Text("Ice cannot display menu bar items for automatically hidden menu bars")
                 .padding(.horizontal, 10)
+        } else if items.isEmpty {
+            Text("No items in \(section.displayString)")
+                .font(.callout)
+                .padding(.horizontal, 12)
+                .accessibilityLabel("No items in \(section.displayString)")
         } else {
             ScrollView(.horizontal) {
-                HStack(spacing: 0) {
+                HStack(spacing: settings.iceBarItemSpacing) {
                     ForEach(items, id: \.stableID) { item in
                         IceBarItemView(item: item, closePanel: closePanel)
                     }
                 }
             }
-            .environment(\.isScrollEnabled, frame.width == imageCache.screen?.frame.width)
+            .environment(\.isScrollEnabled, true)
             .defaultScrollAnchor(.trailing)
             .scrollIndicatorsFlash(trigger: scrollIndicatorsFlashTrigger)
             .task {
@@ -348,9 +346,20 @@ private struct IceBarContentView: View {
 private struct IceBarItemView: View {
     @EnvironmentObject var imageCache: MenuBarItemImageCache
     @EnvironmentObject var itemManager: MenuBarItemManager
+    @EnvironmentObject var settings: GeneralSettingsManager
 
     let item: MenuBarItem
     let closePanel: () -> Void
+
+    private var iconSide: CGFloat { settings.iceBarIconSize }
+    private var hitTarget: CGFloat { iconSide + 4 }
+
+    @State private var isHovered = false
+
+    private var usesHostedAppIcon: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 &&
+            item.hostedHandle != nil && item.owningApplication?.icon != nil
+    }
 
     private var leftClickAction: () -> Void {
         return { [weak itemManager] in
@@ -379,6 +388,11 @@ private struct IceBarItemView: View {
     }
 
     private var image: NSImage? {
+        if usesHostedAppIcon, let icon = item.owningApplication?.icon?.copy() as? NSImage {
+            icon.size = CGSize(width: iconSide, height: iconSide)
+            return icon
+        }
+
         guard
             let image = imageCache.images[item.stableID],
             let screen = imageCache.screen
@@ -392,10 +406,25 @@ private struct IceBarItemView: View {
         return NSImage(cgImage: image, size: size)
     }
 
+    private func scaledImageSize(_ image: NSImage) -> CGSize {
+        let scale = iconSide / max(image.size.height, 1)
+        return CGSize(width: image.size.width * scale, height: iconSide)
+    }
+
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image)
+                if usesHostedAppIcon {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: iconSide, height: iconSide)
+                } else {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: scaledImageSize(image).width, height: scaledImageSize(image).height)
+                }
             } else {
                 Text(item.displayName)
                     .font(.caption)
@@ -404,11 +433,28 @@ private struct IceBarItemView: View {
                     .frame(height: NSStatusBar.system.thickness)
             }
         }
+        .frame(
+            width: usesHostedAppIcon ? hitTarget : nil,
+            height: hitTarget
+        )
         .contentShape(Rectangle())
+        .background {
+            if usesHostedAppIcon && isHovered {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.primary.opacity(0.12))
+                    .padding(2)
+            }
+        }
         .overlay {
             IceBarItemClickView(item: item, leftClickAction: leftClickAction, rightClickAction: rightClickAction)
         }
+        .onHover { isHovered = $0 }
+        .focusable()
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(item.displayName)
+        .accessibilityHint("Press to open. Secondary click for more options.")
+        .accessibilityAction(.default) { leftClickAction() }
         .accessibilityAction(named: "left click", leftClickAction)
         .accessibilityAction(named: "right click", rightClickAction)
     }
@@ -452,6 +498,39 @@ private struct IceBarItemClickView: NSViewRepresentable {
             lastLeftMouseDownLocation = NSEvent.mouseLocation
         }
 
+        override var acceptsFirstResponder: Bool {
+            true
+        }
+
+        override func keyDown(with event: NSEvent) {
+            if event.keyCode == 36 || event.keyCode == 49 {
+                leftClickAction()
+            } else {
+                super.keyDown(with: event)
+            }
+        }
+
+        override func isAccessibilityElement() -> Bool {
+            true
+        }
+
+        override func accessibilityRole() -> NSAccessibility.Role? {
+            .button
+        }
+
+        override func accessibilityLabel() -> String? {
+            item.displayName
+        }
+
+        override func accessibilityHelp() -> String? {
+            "Press to open. Secondary click for more options."
+        }
+
+        override func accessibilityPerformPress() -> Bool {
+            leftClickAction()
+            return true
+        }
+
         override func rightMouseDown(with event: NSEvent) {
             super.rightMouseDown(with: event)
             lastRightMouseDownDate = .now
@@ -491,8 +570,4 @@ private struct IceBarItemClickView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) { }
-}
-
-private extension Logger {
-    static let iceBar = Logger(category: "IceBar")
 }

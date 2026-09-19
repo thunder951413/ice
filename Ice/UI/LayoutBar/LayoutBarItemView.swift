@@ -44,10 +44,21 @@ final class LayoutBarItemView: NSView {
                 )
                 setFrameSize(size)
             } else {
-                setFrameSize(CGSize(width: max(40, item.frame.width), height: max(20, item.frame.height)))
+                setFrameSize(Self.fallbackSize(for: item))
             }
             needsDisplay = true
         }
+    }
+
+    /// A hosted accessibility element can briefly report a zero-sized frame while
+    /// its owning menu bar is updating. Keep a tangible placeholder in that case:
+    /// otherwise every item can collapse the layout bar's height to zero before an
+    /// image capture arrives.
+    private static func fallbackSize(for item: MenuBarItem) -> CGSize {
+        CGSize(
+            width: max(40, item.frame.width),
+            height: max(20, item.frame.height)
+        )
     }
 
     /// A Boolean value that indicates whether the item view is a dragging placeholder.
@@ -71,8 +82,10 @@ final class LayoutBarItemView: NSView {
         self.item = item
         self.appState = appState
 
-        // set the frame to the full item frame size; the image will be centered when displayed
-        super.init(frame: CGRect(origin: .zero, size: item.frame.size))
+        // Start with a nonzero frame. Hosted accessibility items may not have a
+        // live frame at this exact moment, and a zero-height child collapses the
+        // entire manually laid-out container.
+        super.init(frame: CGRect(origin: .zero, size: Self.fallbackSize(for: item)))
         unregisterDraggedTypes()
 
         self.toolTip = item.displayName
@@ -142,6 +155,9 @@ final class LayoutBarItemView: NSView {
                     fraction: isEnabled ? 1.0 : 0.67
                 )
                 NSGraphicsContext.restoreGraphicsState()
+            } else if item.hostedHandle != nil, let icon = item.owningApplication?.icon {
+                let side = min(20, bounds.height)
+                icon.draw(in: CGRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side))
             } else {
                 let background = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 2), xRadius: 6, yRadius: 6)
                 NSColor.controlAccentColor.withAlphaComponent(isEnabled ? 0.16 : 0.08).setFill()
@@ -178,7 +194,46 @@ final class LayoutBarItemView: NSView {
         }
     }
 
+    private func sectionMenu() -> NSMenu? {
+        guard HostedItemVisibilityManager.isSupported, item.canBeHidden, let appState else {
+            return nil
+        }
+        let menu = NSMenu()
+        for (index, name) in MenuBarSection.Name.allCases.enumerated() {
+            guard appState.menuBarManager.section(withName: name)?.isEnabled == true else { continue }
+            let entry = NSMenuItem(title: "Move to \(name.displayString)", action: #selector(moveToSection(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.tag = index
+            entry.state = appState.itemManager.itemCache[name].contains(where: { $0.stableID == item.stableID }) ? .on : .off
+            menu.addItem(entry)
+        }
+        return menu
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        sectionMenu() ?? super.menu(for: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let menu = sectionMenu() else {
+            super.mouseUp(with: event)
+            return
+        }
+        menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+    }
+
+    @objc private func moveToSection(_ sender: NSMenuItem) {
+        let sections = MenuBarSection.Name.allCases
+        guard sections.indices.contains(sender.tag) else { return }
+        appState?.itemManager.assignHostedItem(item, to: sections[sender.tag])
+    }
+
     override func mouseDragged(with event: NSEvent) {
+        // macOS 27 does not deliver layout-bar drops reliably. Selecting a
+        // section is handled by the click menu instead.
+        guard !HostedItemVisibilityManager.isSupported else {
+            return
+        }
         super.mouseDragged(with: event)
 
         guard isEnabled else {
@@ -254,6 +309,32 @@ extension LayoutBarItemView: NSDraggingSource {
 }
 
 extension LayoutBarItemView: NSAccessibilityLayoutItem { }
+
+extension LayoutBarItemView {
+    override func isAccessibilityElement() -> Bool {
+        true
+    }
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        .button
+    }
+
+    override func accessibilityLabel() -> String? {
+        item.displayName
+    }
+
+    override func accessibilityIdentifier() -> String {
+        "layout-bar-item.\(item.stableID)"
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let menu = sectionMenu() else {
+            return super.accessibilityPerformPress()
+        }
+        menu.popUp(positioning: nil, at: CGPoint(x: bounds.midX, y: bounds.midY), in: self)
+        return true
+    }
+}
 
 // MARK: Layout Bar Item Pasteboard Type
 extension NSPasteboard.PasteboardType {

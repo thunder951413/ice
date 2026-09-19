@@ -47,12 +47,19 @@ struct MenuBarItem {
 
     /// A Boolean value that indicates whether the item can be moved.
     var isMovable: Bool {
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27, hostedHandle != nil {
+            return canBeHidden
+        }
         let immovableItems = Set(MenuBarItemInfo.immovableItems)
         return !immovableItems.contains(info)
     }
 
     /// A Boolean value that indicates whether the item can be hidden.
     var canBeHidden: Bool {
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27, let hostedHandle {
+            guard let bundle = hostedHandle.sourceBundleIdentifier else { return false }
+            return !bundle.hasPrefix("com.apple.") && bundle != Bundle.main.bundleIdentifier
+        }
         let nonHideableItems = Set(MenuBarItemInfo.nonHideableItems)
         return !nonHideableItems.contains(info)
     }
@@ -225,7 +232,8 @@ extension MenuBarItem {
             }
         }
 
-        let legacyWindowIDs = Bridging.getWindowList(option: option)
+        let legacyWindowIDs = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+            ? [] : Bridging.getWindowList(option: option)
         switch HostedMenuBarBackend.preferredMode(for: legacyWindowIDs) {
         case .hostedAccessibility:
             return HostedMenuBarBackend.enumerate(forceRefresh: forceRefresh).lazy

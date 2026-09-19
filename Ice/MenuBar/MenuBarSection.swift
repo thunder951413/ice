@@ -31,6 +31,25 @@ final class MenuBarSection {
             case .alwaysHidden: "always-hidden section"
             }
         }
+
+        /// The canonical string used to persist hosted section assignments.
+        var persistenceString: String {
+            switch self {
+            case .visible: "visible"
+            case .hidden: "hidden"
+            case .alwaysHidden: "alwaysHidden"
+            }
+        }
+
+        /// Creates a name from its persisted string representation.
+        init?(persistenceString: String) {
+            switch persistenceString {
+            case "visible": self = .visible
+            case "hidden": self = .hidden
+            case "alwaysHidden": self = .alwaysHidden
+            default: return nil
+            }
+        }
     }
 
     /// The name of the section.

@@ -15,6 +15,9 @@ final class EventManager {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// The single pending delayed show-on-hover evaluation.
+    private var showOnHoverTask: Task<Void, Never>?
+
     // MARK: Monitors
 
     /// Monitor for mouse down events.
@@ -149,6 +152,7 @@ extension EventManager {
         guard
             let appState,
             appState.settingsManager.generalSettingsManager.showOnClick,
+            !isMouseInsideIceIcon,
             isMouseInsideEmptyMenuBarSpace
         else {
             return
@@ -207,11 +211,15 @@ extension EventManager {
             return
         }
 
+        let presentationGeneration = appState.menuBarManager.iceBarPanel.presentationGeneration
         Task {
             let initialSpaceID = Bridging.activeSpaceID
 
             // Sleep for a bit to give the window under the mouse a chance to focus.
             try? await Task.sleep(for: .seconds(0.25))
+            // A settings button can open a new bar after this mouse-down. Do
+            // not let the earlier outside click dismiss that new presentation.
+            guard presentationGeneration == appState.menuBarManager.iceBarPanel.presentationGeneration else { return }
 
             // If clicking caused a space change, don't bother with the window check.
             if Bridging.activeSpaceID != initialSpaceID {
@@ -257,6 +265,7 @@ extension EventManager {
         guard
             let appState,
             appState.settingsManager.advancedSettingsManager.showContextMenuOnRightClick,
+            !isMouseInsideIceIcon,
             isMouseInsideEmptyMenuBarSpace,
             let mouseLocation = MouseCursor.locationAppKit
         else {
@@ -364,28 +373,63 @@ extension EventManager {
         }
 
         let delay = appState.settingsManager.advancedSettingsManager.showOnHoverDelay
+        let shouldShow = hiddenSection.isHidden
+        if shouldShow {
+            guard isMouseInsideEmptyMenuBarSpace else {
+                return
+            }
+        } else {
+            guard
+                !isMouseInsideMenuBar,
+                !isMouseInsideIceBar
+            else {
+                return
+            }
+        }
 
-        Task {
-            if hiddenSection.isHidden {
-                guard self.isMouseInsideEmptyMenuBarSpace else {
+        guard showOnHoverTask == nil else {
+            return
+        }
+
+        showOnHoverTask = Task { [weak self, weak hiddenSection] in
+            defer {
+                self?.showOnHoverTask = nil
+            }
+            guard let self, let hiddenSection else {
+                return
+            }
+            if shouldShow {
+                guard
+                    hiddenSection.isHidden,
+                    self.isMouseInsideEmptyMenuBarSpace
+                else {
                     return
                 }
                 try? await Task.sleep(for: .seconds(delay))
-                // Make sure the mouse is still inside.
-                guard self.isMouseInsideEmptyMenuBarSpace else {
+                // Make sure the mouse is still inside and the setting is still enabled.
+                guard
+                    !Task.isCancelled,
+                    self.appState?.settingsManager.generalSettingsManager.showOnHover == true,
+                    hiddenSection.isHidden,
+                    self.isMouseInsideEmptyMenuBarSpace
+                else {
                     return
                 }
                 hiddenSection.show()
             } else {
                 guard
+                    !hiddenSection.isHidden,
                     !self.isMouseInsideMenuBar,
                     !self.isMouseInsideIceBar
                 else {
                     return
                 }
                 try? await Task.sleep(for: .seconds(delay))
-                // Make sure the mouse is still outside.
+                // Make sure the mouse is still outside and the setting is still enabled.
                 guard
+                    !Task.isCancelled,
+                    self.appState?.settingsManager.generalSettingsManager.showOnHover == true,
+                    !hiddenSection.isHidden,
                     !self.isMouseInsideMenuBar,
                     !self.isMouseInsideIceBar
                 else {
@@ -490,6 +534,14 @@ extension EventManager {
         else {
             return false
         }
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+            let displayBounds = CGDisplayBounds(screen.displayID)
+            return HostedMenuBarBackend.renderedItemFrames().contains {
+                $0.intersects(displayBounds) &&
+                    mouseLocation.x >= $0.minX - 2 &&
+                    mouseLocation.x <= $0.maxX + 2
+            }
+        }
         let menuBarItems = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: true)
         return menuBarItems.contains { $0.frame.contains(mouseLocation) }
     }
@@ -539,14 +591,34 @@ extension EventManager {
     /// the bounds of the Ice icon.
     var isMouseInsideIceIcon: Bool {
         guard
-            let appState,
-            let visibleSection = appState.menuBarManager.section(withName: .visible),
-            let iceIconFrame = visibleSection.controlItem.windowFrame,
-            let mouseLocation = MouseCursor.locationAppKit
+            isMouseInsideMenuBar,
+            let mouseLocation = MouseCursor.locationCoreGraphics
         else {
             return false
         }
-        return iceIconFrame.contains(mouseLocation)
+
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+            guard
+                let screen = bestScreen,
+                let frame = HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier).first
+            else {
+                return false
+            }
+            let displayBounds = CGDisplayBounds(screen.displayID)
+            return frame.intersects(displayBounds) &&
+                mouseLocation.x >= frame.minX - 2 &&
+                mouseLocation.x <= frame.maxX + 2
+        }
+
+        guard
+            let appState,
+            let visibleSection = appState.menuBarManager.section(withName: .visible),
+            let iceIconFrame = visibleSection.controlItem.windowFrame,
+            let appKitMouseLocation = MouseCursor.locationAppKit
+        else {
+            return false
+        }
+        return iceIconFrame.contains(appKitMouseLocation)
     }
 }
 
