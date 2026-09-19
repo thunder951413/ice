@@ -44,12 +44,11 @@ jobs:
             if gh release view "$TAG" --repo "$REPOSITORY" --json isDraft,assets,targetCommitish > release.json 2> release-error.log; then
               draft=$(jq -r '.isDraft' release.json)
               target=$(jq -r '.targetCommitish' release.json)
-              mapfile -t assets < <(jq -r '.assets[].name' release.json | sort)
               if [[ "$target" != "$RELEASE_SHA" ]]; then
                 echo "Draft $TAG targets $target, but tag resolves to $RELEASE_SHA." >&2
                 exit 1
               fi
-              if [[ " ${assets[*]} " == *" Ice.zip " && " ${assets[*]} " == *" appcast.xml " && " ${assets[*]} " == *" SHA256SUMS " ]]; then
+              if jq -e '([.assets[].name] | contains(["Ice.zip", "appcast.xml", "SHA256SUMS"]))' release.json > /dev/null; then
                 echo "RELEASE_DRAFT=$draft" >> "$GITHUB_ENV"
                 exit 0
               fi
