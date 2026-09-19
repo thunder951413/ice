@@ -23,6 +23,12 @@ ditto -c -k --sequesterRsrc --keepParent \
 Commit the source and push the current release branch before creating the tag.
 Do not overwrite unrelated `main` history. Prepare release notes in a file.
 
+The `updates` branch is already initialized in this repository. For a new fork,
+initialize it once using your authenticated local account before the first
+release (`git push origin HEAD:refs/heads/updates`). GitHub's built-in workflow
+token may reject creating a branch at a commit that changes workflow files.
+Subsequent feed writes need only the workflow's Contents write permission.
+
 ## Trigger publication
 
 The tag starts a workflow that waits up to five minutes for the three assets.
@@ -57,7 +63,14 @@ the feed to `updates` through GitHub's Contents API. It never writes to `main`
 or force-pushes. Older builds cannot replace a newer feed or become latest.
 Published releases can be revalidated to repair feed publication after a failure.
 A missing-asset timeout can be retried after uploading the assets; do not replace
-an archive that has already been published and signed.
+an archive that has already been published and signed. If the workflow itself
+needs a fix after a tag is created, push the fix to the release branch and run
+it against the existing tag without moving that tag:
+
+```sh
+gh workflow run release.yml --repo thunder951413/ice \
+  --ref codex/macos27-compat -f tag=v0.12.0
+```
 
 ## Private repository access
 
