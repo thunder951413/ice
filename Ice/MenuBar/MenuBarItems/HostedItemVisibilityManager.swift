@@ -19,11 +19,15 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     private weak var appState: AppState?
-    private var handle: UnsafeMutableRawPointer?
-    private var pendingHandle: UnsafeMutableRawPointer?
-    private var pendingConfiguration: HostedVisibilityPolicy.Configuration?
+    private lazy var assertion = VisibilityAssertionSession<UnsafeMutableRawPointer>(
+        activate: { configuration, completion in
+            IceMenuBarVisibilityActivate(configuration.allowed.sorted(), (0...8).map { NSNumber(value: $0) }) { error in
+                MainActor.assumeIsolated { completion(error) }
+            }
+        },
+        invalidate: { IceMenuBarVisibilityInvalidate($0) }
+    )
     private var needsReactivation = false
-    private var applied: HostedVisibilityPolicy.Configuration?
     private var lastFailed: HostedVisibilityPolicy.Configuration?
     private var generation = 0
     private var ignoreStateChangesUntil = Date.distantPast
@@ -34,6 +38,14 @@ final class HostedItemVisibilityManager: ObservableObject {
     private var activationFailureCount = 0
     private var revealTasks = [String: Task<Void, Never>]()
     private var temporarilyRevealedBundles = Set<String>()
+    private var revealTokens = [String: UUID]()
+    private struct RevealWaiter {
+        let bundle: String
+        let continuation: CheckedContinuation<Void, Error>
+        let timeout: Task<Void, Never>
+    }
+    private var revealWaiters = [UUID: RevealWaiter]()
+    private var permissionWasAvailable = true
     private var isStopped = false
     private let logger = Logger(category: "HostedItemVisibility")
 
@@ -49,7 +61,8 @@ final class HostedItemVisibilityManager: ObservableObject {
         let changes = Publishers.MergeMany(
             [appState.itemManager.$itemCache.mapToVoid().eraseToAnyPublisher(),
              appState.settingsManager.generalSettingsManager.$useIceBar.mapToVoid().eraseToAnyPublisher(),
-             appState.settingsManager.advancedSettingsManager.$enableAlwaysHiddenSection.mapToVoid().eraseToAnyPublisher()]
+             appState.settingsManager.advancedSettingsManager.$enableAlwaysHiddenSection.mapToVoid().eraseToAnyPublisher(),
+             appState.menuBarManager.$isHidingPaused.mapToVoid().eraseToAnyPublisher()]
                 + appState.menuBarManager.sections.map { $0.controlItem.$state.mapToVoid().eraseToAnyPublisher() }
         )
         changes.sink { [weak self] in self?.scheduleRefresh() }.store(in: &cancellables)
@@ -83,6 +96,14 @@ final class HostedItemVisibilityManager: ObservableObject {
                 lastFailed = nil
                 scheduleRefresh()
             }.store(in: &cancellables)
+        // Recheck revocation without keeping the onboarding one-second poll alive.
+        Timer.publish(every: 10, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in
+                guard let self, !self.isStopped else { return }
+                self.appState?.permissionsManager.refreshPermissions()
+                let hadPermission = self.permissionWasAvailable
+                if self.checkAccessibility(), !hadPermission { self.scheduleRefresh() }
+            }.store(in: &cancellables)
         scheduleRefresh()
     }
 
@@ -99,6 +120,12 @@ final class HostedItemVisibilityManager: ObservableObject {
 
     func refreshNow() {
         guard Self.isSupported, !isStopped, let appState else { return }
+        guard checkAccessibility() else { return }
+        guard !appState.menuBarManager.isHidingPaused else {
+            if assertion.isActive || assertion.isActivating { releaseRestriction() }
+            resolveRevealWaiters()
+            return
+        }
         let useIceBar = appState.settingsManager.generalSettingsManager.useIceBar
         let entries = MenuBarSection.Name.allCases.flatMap { name in
             let section = appState.menuBarManager.section(withName: name)
@@ -126,98 +153,170 @@ final class HostedItemVisibilityManager: ObservableObject {
             failureDescription = nil
             lastFailed = nil
             cancelActivationRetry()
+            resolveRevealWaiters()
             return
         }
         guard IceMenuBarVisibilityAvailable() else {
             failureDescription = "Menu bar hiding is unavailable on this macOS version. Items remain visible."
             return
         }
-        // Serialize replacements. Changes arriving during activation are folded
-        // into the next refresh after completion rather than opening a gap.
-        guard pendingConfiguration == nil else { return }
-        if !needsReactivation, let applied, handle != nil,
+        guard !assertion.isActivating else { return }
+        if !needsReactivation, let applied = assertion.activeConfiguration, assertion.isActive,
            applied.concealed == desired.concealed,
-           desired.allowed.isSubset(of: applied.allowed) { return }
+           desired.allowed.isSubset(of: applied.allowed) {
+            resolveRevealWaiters()
+            return
+        }
         guard lastFailed != desired else { return }
         needsReactivation = false
         generation += 1
         let attempt = generation
-        pendingConfiguration = desired
         ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
-        // Keep the current restriction alive until its replacement is active.
-        // Releasing it first briefly reveals every hidden menu bar item.
-        pendingHandle = IceMenuBarVisibilityActivate(desired.allowed.sorted(), (0...8).map { NSNumber(value: $0) }) { [weak self] error in
-            MainActor.assumeIsolated {
-                guard let self, self.generation == attempt, !self.isStopped else { return }
-                self.ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
-                if let error {
-                    if let pendingHandle = self.pendingHandle {
-                        IceMenuBarVisibilityInvalidate(pendingHandle)
-                    }
-                    self.pendingHandle = nil
-                    self.pendingConfiguration = nil
-                    // A failed replacement must not discard the working one.
-                    self.needsReactivation = true
-                    self.recordActivationFailure(desired, description: error.localizedDescription)
-                    self.logger.error("Visibility assertion failed: \(error.localizedDescription)")
-                    self.scheduleRefresh()
-                } else {
-                    let previousHandle = self.handle
-                    self.handle = self.pendingHandle
-                    self.pendingHandle = nil
-                    self.pendingConfiguration = nil
-                    self.applied = desired
-                    HostedMenuBarBackend.setConcealedBundleIdentifiers(desired.concealed)
-                    if let previousHandle {
-                        IceMenuBarVisibilityInvalidate(previousHandle)
-                    }
-                    self.cancelActivationRetry()
-                    self.lastFailed = nil
-                    self.failureDescription = nil
-                    HostedMenuBarBackend.invalidateEnumerationCache()
-                    self.scheduleRefresh()
-                }
+        assertion.begin(desired) { [weak self] result in
+            guard let self, self.generation == attempt, !self.isStopped else { return }
+            self.ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
+            switch result {
+            case .failure(let error):
+                self.needsReactivation = true
+                self.recordActivationFailure(desired, description: error.localizedDescription)
+                self.failRevealWaiters(error)
+                self.logger.error("Visibility assertion failed: \(error.localizedDescription)")
+            case .success:
+                HostedMenuBarBackend.setConcealedBundleIdentifiers(desired.concealed)
+                self.cancelActivationRetry()
+                self.lastFailed = nil
+                self.failureDescription = nil
+                HostedMenuBarBackend.invalidateEnumerationCache()
+                self.resolveRevealWaiters()
             }
-        }
-        if pendingHandle == nil {
-            // The bridge also completes asynchronously on this path. Invalidate
-            // that callback so this failed attempt is counted only once.
-            generation += 1
-            pendingConfiguration = nil
-            needsReactivation = true
-            recordActivationFailure(desired, description: "macOS could not activate menu bar hiding.")
+            self.scheduleRefresh()
         }
     }
 
-    /// Reveal before reacquiring the AX element: hidden elements can disappear
-    /// entirely, and stale coordinates may now belong to a different app.
-    func temporarilyReveal(_ item: MenuBarItem) async {
-        guard let bundle = item.hostedHandle?.sourceBundleIdentifier else { return }
-        let baselineWindowIDs = Set(
-            WindowInfo.getOnScreenWindows()
-                .filter { $0.ownerPID == item.ownerPID }
-                .map(\.windowID)
-        )
+    enum RevealError: LocalizedError {
+        case permissionRequired
+        case timedOut
+        case unavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .permissionRequired: "Accessibility permission is required. Enable it in System Settings, then try again."
+            case .timedOut: "The menu bar item did not become available in time. Try again."
+            case .unavailable: "This menu bar item is no longer available."
+            }
+        }
+    }
+
+    /// Wait for the actual configuration completion, perform the click, and only
+    /// then start the user's rehide delay. Newer clicks supersede older requests.
+    func withTemporarilyRevealedItem(
+        _ item: MenuBarItem,
+        action: @MainActor (_ validate: @escaping @MainActor () throws -> Void) async throws -> Void
+    ) async throws {
+        guard !isStopped else { throw CancellationError() }
+        guard checkAccessibility() else { throw RevealError.permissionRequired }
+        guard let bundle = item.hostedHandle?.sourceBundleIdentifier else { throw RevealError.unavailable }
+        let baselineWindowIDs = Set(WindowInfo.getOnScreenWindows()
+            .filter { $0.ownerPID == item.ownerPID }.map(\.windowID))
+        if let previous = revealTokens[bundle] { finishRevealWaiter(previous, error: CancellationError()) }
+        let token = UUID()
+        revealTokens[bundle] = token
         temporarilyRevealedBundles.insert(bundle)
         revealTasks[bundle]?.cancel()
-        refreshNow()
-        try? await Task.sleep(for: .milliseconds(300))
-        HostedMenuBarBackend.invalidateEnumerationCache()
-        revealTasks[bundle] = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled, let self else { return }
-            // Keep the original menu available while the user interacts with it.
-            while NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle
-                || WindowInfo.getOnScreenWindows().contains(where: {
-                    $0.ownerPID == item.ownerPID && !baselineWindowIDs.contains($0.windowID)
-                }) {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-            }
-            temporarilyRevealedBundles.remove(bundle)
-            revealTasks[bundle] = nil
-            refreshNow()
+        revealTasks[bundle] = nil
+        var didPerformAction = false
+        defer {
+            scheduleRehide(item, bundle: bundle, token: token,
+                baselineWindowIDs: baselineWindowIDs, didPerformAction: didPerformAction)
         }
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let timeout = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                    self?.finishRevealWaiter(token, error: RevealError.timedOut)
+                }
+                revealWaiters[token] = RevealWaiter(bundle: bundle, continuation: continuation, timeout: timeout)
+                refreshNow()
+                resolveRevealWaiters()
+            }
+            try Task.checkCancellation()
+            guard revealTokens[bundle] == token, !isStopped else { throw CancellationError() }
+            try await action { [weak self] in
+                try Task.checkCancellation()
+                guard let self, !self.isStopped, self.revealTokens[bundle] == token else {
+                    throw CancellationError()
+                }
+                guard self.checkAccessibility() else { throw RevealError.permissionRequired }
+            }
+            didPerformAction = true
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finishRevealWaiter(token, error: CancellationError()) }
+        }
+    }
+
+    private func resolveRevealWaiters() {
+        guard !assertion.isActivating else { return }
+        let concealed = assertion.activeConfiguration?.concealed ?? []
+        let ready = revealWaiters.filter { !concealed.contains($0.value.bundle) }.map(\.key)
+        for token in ready { finishRevealWaiter(token, error: nil) }
+    }
+
+    private func finishRevealWaiter(_ token: UUID, error: Error?) {
+        guard let waiter = revealWaiters.removeValue(forKey: token) else { return }
+        waiter.timeout.cancel()
+        if let error { waiter.continuation.resume(throwing: error) }
+        else { waiter.continuation.resume() }
+    }
+
+    private func failRevealWaiters(_ error: Error) {
+        for token in Array(revealWaiters.keys) { finishRevealWaiter(token, error: error) }
+    }
+
+    private func scheduleRehide(
+        _ item: MenuBarItem, bundle: String, token: UUID,
+        baselineWindowIDs: Set<CGWindowID>, didPerformAction: Bool
+    ) {
+        guard revealTokens[bundle] == token, !isStopped else { return }
+        let configuredDelay = appState?.settingsManager.advancedSettingsManager.tempShowInterval ?? 15
+        let boundedDelay = configuredDelay.isFinite ? min(30, max(0, configuredDelay)) : 15
+        // Even zero-delay menus need one run-loop opportunity to create their
+        // windows after AXPress; the user's delay begins after the action.
+        let delay = didPerformAction ? max(0.5, boundedDelay) : 0
+        revealTasks[bundle] = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard let self else { return }
+            while WindowInfo.getOnScreenWindows().contains(where: {
+                $0.ownerPID == item.ownerPID && !baselineWindowIDs.contains($0.windowID)
+            }) {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+            guard self.revealTokens[bundle] == token, !Task.isCancelled else { return }
+            self.revealTokens[bundle] = nil
+            self.temporarilyRevealedBundles.remove(bundle)
+            self.revealTasks[bundle] = nil
+            self.refreshNow()
+        }
+    }
+
+    @discardableResult
+    private func checkAccessibility() -> Bool {
+        guard AXIsProcessTrusted() else {
+            permissionWasAvailable = false
+            failRevealWaiters(RevealError.permissionRequired)
+            if assertion.isActive || assertion.isActivating {
+                releaseRestriction()
+                cancelActivationRetry()
+            }
+            failureDescription = RevealError.permissionRequired.localizedDescription
+            return false
+        }
+        if !permissionWasAvailable {
+            permissionWasAvailable = true
+            needsReactivation = true
+            lastFailed = nil
+        }
+        return true
     }
 
     func restoreAll(stop: Bool = false) {
@@ -228,6 +327,8 @@ final class HostedItemVisibilityManager: ObservableObject {
         revealTasks.values.forEach { $0.cancel() }
         revealTasks.removeAll()
         temporarilyRevealedBundles.removeAll()
+        revealTokens.removeAll()
+        failRevealWaiters(CancellationError())
         lastFailed = nil
         failureDescription = nil
         releaseRestriction()
@@ -270,16 +371,7 @@ final class HostedItemVisibilityManager: ObservableObject {
     private func releaseRestriction() {
         generation += 1
         ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
-        if let pendingHandle {
-            IceMenuBarVisibilityInvalidate(pendingHandle)
-        }
-        if let handle {
-            IceMenuBarVisibilityInvalidate(handle)
-        }
-        pendingHandle = nil
-        pendingConfiguration = nil
-        handle = nil
-        applied = nil
+        assertion.invalidateAll()
         needsReactivation = false
         HostedMenuBarBackend.setConcealedBundleIdentifiers([])
     }

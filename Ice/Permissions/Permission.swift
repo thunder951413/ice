@@ -104,6 +104,12 @@ class Permission: ObservableObject, Identifiable {
         }
     }
 
+    /// Refreshes the displayed permission state without starting a new timer.
+    func refresh() {
+        let current = check()
+        if current != hasPermission { hasPermission = current }
+    }
+
     /// Stops running the permission check.
     func stopCheck() {
         timerCancellable?.cancel()

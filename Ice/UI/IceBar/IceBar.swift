@@ -16,10 +16,12 @@ final class IceBarPanel: NSPanel {
 
     private var cancellables = Set<AnyCancellable>()
     private lazy var escapeMonitor = UniversalEventMonitor(mask: .keyDown) { [weak self] event in
-        guard let self, self.isVisible, event.keyCode == KeyCode.escape.rawValue else { return event }
+        guard let self, self.isKeyWindow, event.keyCode == KeyCode.escape.rawValue else { return event }
         self.close()
         return nil
     }
+
+    override var canBecomeKey: Bool { true }
 
     init(appState: AppState) {
         super.init(
@@ -188,14 +190,19 @@ final class IceBarPanel: NSPanel {
         appState.navigationState.isIceBarPresented = true
         currentSection = section
 
-        contentView = IceBarHostingView(appState: appState, screen: screen, section: section) { [weak self] in
+        let hostingView = IceBarHostingView(appState: appState, screen: screen, section: section) { [weak self] in
             self?.close()
         }
+        contentView = hostingView
 
         updateOrigin(for: screen)
 
-        orderFrontRegardless()
+        makeKeyAndOrderFront(nil)
         escapeMonitor.start()
+        DispatchQueue.main.async { [weak self, weak hostingView] in
+            guard self?.isKeyWindow == true else { return }
+            hostingView?.focusFirstItem()
+        }
 
         // Do not block presentation on AX enumeration and shared-window screen
         // capture. The current logical cache is immediately usable, and the
@@ -253,6 +260,22 @@ private final class IceBarHostingView: NSHostingView<AnyView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         return true
     }
+
+    func focusFirstItem() {
+        func focusableButtons(in view: NSView) -> [NSView] {
+            view.subviews.flatMap { subview in
+                let current = subview.acceptsFirstResponder
+                    && subview.isAccessibilityElement()
+                    && subview.accessibilityRole() == .button ? [subview] : []
+                return current + focusableButtons(in: subview)
+            }
+        }
+        guard let first = focusableButtons(in: self).min(by: {
+            $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX
+        }) else { return }
+        window?.makeFirstResponder(first)
+        first.scrollToVisible(first.bounds)
+    }
 }
 
 // MARK: - IceBarContentView
@@ -289,9 +312,9 @@ private struct IceBarContentView: View {
                 Button("Arrange hidden items…") { openSettings(.menuBarLayout) }
                 Button("Ice Bar settings…") { openSettings(.general) }
                 Divider()
-                Button("Show All Hidden Items") {
+                Button(menuBarManager.isHidingPaused ? "Resume Hiding Menu Bar Items" : "Pause Hiding Menu Bar Items") {
                     closePanel()
-                    menuBarManager.resetModifications()
+                    menuBarManager.toggleHidingPaused()
                 }
                 Divider()
                 Button("Close Ice Bar", action: closePanel)
@@ -445,18 +468,11 @@ private struct IceBarItemView: View {
                     .padding(2)
             }
         }
+        .accessibilityHidden(true)
         .overlay {
             IceBarItemClickView(item: item, leftClickAction: leftClickAction, rightClickAction: rightClickAction)
         }
         .onHover { isHovered = $0 }
-        .focusable()
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(item.displayName)
-        .accessibilityHint("Press to open. Secondary click for more options.")
-        .accessibilityAction(.default) { leftClickAction() }
-        .accessibilityAction(named: "left click", leftClickAction)
-        .accessibilityAction(named: "right click", rightClickAction)
     }
 }
 
@@ -481,6 +497,7 @@ private struct IceBarItemClickView: NSViewRepresentable {
             self.rightClickAction = rightClickAction
             super.init(frame: .zero)
             self.toolTip = item.displayName
+            self.focusRingType = .default
         }
 
         @available(*, unavailable)
@@ -494,6 +511,7 @@ private struct IceBarItemClickView: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             super.mouseDown(with: event)
+            window?.makeFirstResponder(self)
             lastLeftMouseDownDate = .now
             lastLeftMouseDownLocation = NSEvent.mouseLocation
         }
@@ -502,12 +520,52 @@ private struct IceBarItemClickView: NSViewRepresentable {
             true
         }
 
+        override func becomeFirstResponder() -> Bool {
+            let became = super.becomeFirstResponder()
+            if became { setKeyboardFocusRingNeedsDisplay(bounds) }
+            return became
+        }
+
+        override func resignFirstResponder() -> Bool {
+            let resigned = super.resignFirstResponder()
+            if resigned { setKeyboardFocusRingNeedsDisplay(bounds) }
+            return resigned
+        }
+
+        override var focusRingMaskBounds: NSRect { bounds }
+
+        override func drawFocusRingMask() {
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6).fill()
+        }
+
         override func keyDown(with event: NSEvent) {
-            if event.keyCode == 36 || event.keyCode == 49 {
+            switch event.keyCode {
+            case 36, 49: // Return and Space
                 leftClickAction()
-            } else {
+            case 123: // Left arrow
+                moveKeyboardFocus(by: -1)
+            case 124: // Right arrow
+                moveKeyboardFocus(by: 1)
+            default:
                 super.keyDown(with: event)
             }
+        }
+
+        private func moveKeyboardFocus(by offset: Int) {
+            guard let root = window?.contentView else { return }
+            func representedViews(in view: NSView) -> [Represented] {
+                view.subviews.flatMap { subview in
+                    (subview as? Represented).map { [$0] } ?? representedViews(in: subview)
+                }
+            }
+            let views = representedViews(in: root).sorted {
+                $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX
+            }
+            guard let index = views.firstIndex(where: { $0 === self }), !views.isEmpty else { return }
+            let nextIndex = (index + offset + views.count) % views.count
+            let next = views[nextIndex]
+            window?.makeFirstResponder(next)
+            next.scrollToVisible(next.bounds)
         }
 
         override func isAccessibilityElement() -> Bool {

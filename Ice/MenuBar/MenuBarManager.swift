@@ -31,6 +31,10 @@ final class MenuBarManager: ObservableObject {
     /// A Boolean value that indicates whether the application menus are hidden.
     private var isHidingApplicationMenus = false
 
+    /// Session-only pause: assignments, ordering and spacing remain untouched.
+    @Published private(set) var isHidingPaused = false
+    private var statesBeforePause = [MenuBarSection.Name: ControlItem.HidingState]()
+
     /// The managed sections in the menu bar.
     private(set) var sections = [MenuBarSection]()
 
@@ -345,6 +349,28 @@ final class MenuBarManager: ObservableObject {
         }
     }
 
+    func pauseHiding() {
+        guard !isHidingPaused else { return }
+        statesBeforePause = Dictionary(uniqueKeysWithValues: sections.map { ($0.name, $0.controlItem.state) })
+        isHidingPaused = true
+        hostedItemVisibilityManager.restoreAll()
+        showAllSections()
+    }
+
+    func resumeHiding() {
+        guard isHidingPaused else { return }
+        isHidingPaused = false
+        for section in sections {
+            section.controlItem.state = statesBeforePause[section.name] ?? .hideItems
+        }
+        statesBeforePause.removeAll()
+        hostedItemVisibilityManager.refreshNow()
+    }
+
+    func toggleHidingPaused() {
+        if isHidingPaused { resumeHiding() } else { pauseHiding() }
+    }
+
     /// Resets Ice's runtime menu bar modifications so that every managed item
     /// becomes visible again.
     ///
@@ -353,6 +379,8 @@ final class MenuBarManager: ObservableObject {
     /// appear invisible). It does not touch the user's other preferences.
     func resetModifications() {
         Logger.menuBarManager.info("Resetting Ice menu bar modifications")
+        isHidingPaused = false
+        statesBeforePause.removeAll()
         showAllSections()
         guard let appState else {
             return
@@ -385,7 +413,7 @@ final class MenuBarManager: ObservableObject {
         menu.addItem(editItem)
 
         let showAllItem = NSMenuItem(
-            title: "Show All Hidden Items",
+            title: isHidingPaused ? "Resume Hiding" : "Pause Hiding",
             action: #selector(showAllSectionsAction),
             keyEquivalent: ""
         )
@@ -438,7 +466,7 @@ final class MenuBarManager: ObservableObject {
     /// Reveals all hidden items. Wraps ``showAllSections()`` for use as a menu
     /// item action.
     @objc private func showAllSectionsAction() {
-        resetModifications()
+        toggleHidingPaused()
     }
 
     /// Shows the appearance editor popover, centered under the menu bar.

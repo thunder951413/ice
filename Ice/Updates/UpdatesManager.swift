@@ -15,12 +15,6 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// The date of the last update check.
     @Published var lastUpdateCheckDate: Date?
 
-    /// A Boolean value that indicates whether a GitHub token is configured for updates.
-    @Published private(set) var hasGitHubUpdateToken = false
-
-    /// An error encountered while accessing the GitHub update token.
-    @Published private(set) var githubUpdateTokenError: String?
-
     /// The shared app state.
     private(set) weak var appState: AppState?
 
@@ -67,53 +61,12 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// Sets up the manager.
     func performSetup() {
         let updaterController = updaterController
-        configureUpdateRequestHeaders()
+        // Sparkle persists programmatic feed overrides. Always return to the
+        // signed-in-bundle public feed when setting up a new app version.
         updaterController.updater.clearFeedURLFromUserDefaults()
+        updaterController.updater.httpHeaders = [:]
         updaterController.startUpdater()
         configureCancellables()
-    }
-
-    /// Stores a GitHub token in the Keychain and applies it to future update requests.
-    func saveGitHubUpdateToken(_ token: String) {
-        do {
-            try GitHubUpdateCredentials.saveToken(token)
-            configureUpdateRequestHeaders()
-        } catch {
-            githubUpdateTokenError = error.localizedDescription
-        }
-    }
-
-    /// Removes the GitHub update token from the Keychain.
-    func removeGitHubUpdateToken() {
-        do {
-            try GitHubUpdateCredentials.removeToken()
-            configureUpdateRequestHeaders()
-        } catch {
-            githubUpdateTokenError = error.localizedDescription
-        }
-    }
-
-    /// Clears the most recent Keychain error shown in settings.
-    func clearGitHubUpdateTokenError() {
-        githubUpdateTokenError = nil
-    }
-
-    /// Configures headers for GitHub's repository contents API.
-    private func configureUpdateRequestHeaders() {
-        do {
-            let token = try GitHubUpdateCredentials.loadToken()
-            var headers = ["Accept": "application/vnd.github.raw+json"]
-            if let token {
-                headers["Authorization"] = "Bearer \(token)"
-            }
-            updater.httpHeaders = headers
-            hasGitHubUpdateToken = token != nil
-            githubUpdateTokenError = nil
-        } catch {
-            updater.httpHeaders = ["Accept": "application/vnd.github.raw+json"]
-            hasGitHubUpdateToken = false
-            githubUpdateTokenError = error.localizedDescription
-        }
     }
 
     /// Configures the internal observers for the manager.
@@ -157,26 +110,7 @@ extension UpdatesManager: @preconcurrency SPUUpdaterDelegate {
         willDownloadUpdate item: SUAppcastItem,
         with request: NSMutableURLRequest
     ) {
-        guard let url = request.url,
-              url.scheme == "https",
-              url.host == "api.github.com",
-              url.path.hasPrefix("/repos/thunder951413/ice/releases/assets/")
-        else {
-            request.setValue(nil, forHTTPHeaderField: "Authorization")
-            return
-        }
-
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
-        do {
-            if let token = try GitHubUpdateCredentials.loadToken() {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            } else {
-                request.setValue(nil, forHTTPHeaderField: "Authorization")
-            }
-        } catch {
-            request.setValue(nil, forHTTPHeaderField: "Authorization")
-            githubUpdateTokenError = error.localizedDescription
-        }
+        request.setValue(nil, forHTTPHeaderField: "Authorization")
     }
 }
 

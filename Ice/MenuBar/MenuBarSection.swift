@@ -211,6 +211,11 @@ final class MenuBarSection {
 
     /// Hides the section.
     func hide() {
+        if appState?.menuBarManager.isHidingPaused == true {
+            appState?.menuBarManager.iceBarPanel.close()
+            stopRehideChecks()
+            return
+        }
         Logger.menuBarSection.info("Hiding \(name.logString), useIceBar=\(useIceBar), isHidden=\(isHidden)")
         guard
             let appState,

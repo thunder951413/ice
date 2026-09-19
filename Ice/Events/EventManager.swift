@@ -29,7 +29,7 @@ final class EventManager {
         }
         switch event.type {
         case .leftMouseDown:
-            handleShowOnClick()
+            handleShowOnClick(with: event)
             handleSmartRehide(with: event)
         case .rightMouseDown:
             handleShowRightClickMenu()
@@ -148,7 +148,7 @@ extension EventManager {
 
     // MARK: Handle Show On Click
 
-    private func handleShowOnClick() {
+    private func handleShowOnClick(with event: NSEvent) {
         guard
             let appState,
             appState.settingsManager.generalSettingsManager.showOnClick,
@@ -158,20 +158,29 @@ extension EventManager {
             return
         }
 
+        // Capture the flags before suspending. Reading NSEvent.modifierFlags
+        // after the delay can observe a later keyboard state instead.
+        let modifiers = MenuBarClickPolicy.ModifierSnapshot(
+            option: event.modifierFlags.contains(.option),
+            control: event.modifierFlags.contains(.control)
+        )
         Task {
             // Short delay helps the toggle action feel more natural.
             try? await Task.sleep(for: .milliseconds(50))
 
-            if NSEvent.modifierFlags == .control {
+            let action = MenuBarClickPolicy.resolve(
+                button: .primary,
+                modifiers: modifiers,
+                allowsAlwaysHidden: appState.settingsManager.advancedSettingsManager.canToggleAlwaysHiddenSection
+            )
+            switch action {
+            case .showMenu:
                 handleShowRightClickMenu()
-            } else if
-                NSEvent.modifierFlags == .option,
-                appState.settingsManager.advancedSettingsManager.canToggleAlwaysHiddenSection
-            {
+            case .toggleAlwaysHidden:
                 if let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden) {
                     alwaysHiddenSection.toggle()
                 }
-            } else {
+            case .toggleHidden:
                 if let hiddenSection = appState.menuBarManager.section(withName: .hidden) {
                     hiddenSection.toggle()
                 }

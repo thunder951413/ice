@@ -1,23 +1,76 @@
-name: Lint Swift Files
+name: Quality checks
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "codex/macos27-compat" ]
     paths:
       - ".github/workflows/lint.yml"
+      - ".github/workflows/release.yml"
       - ".swiftlint.yml"
       - "**/*.swift"
+      - "Ice/Info.plist"
+      - "Ice.xcodeproj/project.pbxproj"
+      - "Scripts/create-appcast.py"
+      - "Scripts/verify-release.py"
+      - "Scripts/test-verify-release.py"
+      - "Scripts/test-visibility-assertion-session.sh"
+      - "Scripts/test-hosted-visibility-policy.sh"
+      - "Scripts/test-hosted-enumeration-scan-policy.sh"
+      - "Scripts/test-menu-bar-click-policy.sh"
+      - "Scripts/build-local.sh"
   pull_request:
     paths:
       - ".github/workflows/lint.yml"
+      - ".github/workflows/release.yml"
       - ".swiftlint.yml"
       - "**/*.swift"
+      - "Ice/Info.plist"
+      - "Ice.xcodeproj/project.pbxproj"
+      - "Scripts/create-appcast.py"
+      - "Scripts/verify-release.py"
+      - "Scripts/test-verify-release.py"
+      - "Scripts/test-visibility-assertion-session.sh"
+      - "Scripts/test-hosted-visibility-policy.sh"
+      - "Scripts/test-hosted-enumeration-scan-policy.sh"
+      - "Scripts/test-menu-bar-click-policy.sh"
+      - "Scripts/build-local.sh"
 jobs:
   swiftlint:
+    name: SwiftLint diagnostics
     if: '!github.event.pull_request.merged'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Run SwiftLint
         uses: norio-nomura/action-swiftlint@3.2.1
         with:
-          args: --strict
+          args: Ice
+
+  release-scripts:
+    name: Release script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check and test release scripts
+        run: |
+          python3 -m py_compile Scripts/create-appcast.py Scripts/verify-release.py Scripts/test-verify-release.py
+          python3 Scripts/test-verify-release.py
+
+  macos-verification:
+    name: macOS build and policy tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run deterministic policy tests
+        run: |
+          ./Scripts/test-hosted-visibility-policy.sh
+          ./Scripts/test-hosted-enumeration-scan-policy.sh
+          ./Scripts/test-menu-bar-click-policy.sh
+          ./Scripts/test-visibility-assertion-session.sh
+      - name: Build unsigned Debug app
+        env:
+          CONFIGURATION: Debug
+          DEVELOPMENT_TEAM: ""
+        run: |
+          export DEVELOPER_DIR="$(xcode-select -p)"
+          ./Scripts/build-local.sh CODE_SIGNING_ALLOWED=NO

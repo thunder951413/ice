@@ -20,6 +20,10 @@ final class MenuBarSearchPanel: NSPanel {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Refresh work belonging to the current presentation.
+    private var refreshTask: Task<Void, Never>?
+    private var presentationGeneration = 0
+
     /// Monitor for mouse down events.
     private lazy var mouseDownMonitor = UniversalEventMonitor(
         mask: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
@@ -98,12 +102,13 @@ final class MenuBarSearchPanel: NSPanel {
             return
         }
 
-        // Important that we set the navigation state before updating the cache.
-        appState.navigationState.isSearchPresented = true
+        presentationGeneration += 1
+        let generation = presentationGeneration
+        refreshTask?.cancel()
 
-        if ScreenCapture.cachedCheckPermissions() {
-            await appState.imageCache.updateCache()
-        }
+        // Present from the current logical cache immediately. Image capture can
+        // be slow on hosted menu bars and should never delay the search field.
+        appState.navigationState.isSearchPresented = true
 
         let hostingView = MenuBarSearchHostingView(appState: appState, panel: self)
         hostingView.setFrameSize(hostingView.intrinsicContentSize)
@@ -122,6 +127,16 @@ final class MenuBarSearchPanel: NSPanel {
 
         mouseDownMonitor.start()
         keyDownMonitor.start()
+
+        refreshTask = Task { [weak self, weak appState] in
+            guard let self, let appState else { return }
+            await appState.itemManager.cacheItemsIfNeeded()
+            guard !Task.isCancelled, generation == self.presentationGeneration else { return }
+            if ScreenCapture.cachedCheckPermissions() {
+                await appState.imageCache.updateCache()
+            }
+            guard !Task.isCancelled, generation == self.presentationGeneration else { return }
+        }
     }
 
     /// Toggles the panel's visibility.
@@ -135,6 +150,9 @@ final class MenuBarSearchPanel: NSPanel {
 
     /// Dismisses the search panel.
     override func close() {
+        presentationGeneration += 1
+        refreshTask?.cancel()
+        refreshTask = nil
         super.close()
         contentView = nil
         mouseDownMonitor.stop()
@@ -206,6 +224,14 @@ private struct MenuBarSearchContentView: View {
             SectionedList(selection: $selection, items: $displayedItems)
                 .contentPadding(8)
                 .scrollContentBackground(.hidden)
+                .overlay {
+                    if displayedItems.allSatisfy({ !$0.isSelectable }) {
+                        Text(searchText.isEmpty ? "No menu bar items" : "No matching menu bar items")
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(searchText.isEmpty ? "No menu bar items" : "No matching menu bar items")
+                            .accessibilityHint("Try a different search")
+                    }
+                }
 
             Divider()
                 .offset(y: 1)
@@ -349,6 +375,9 @@ private struct BottomBarButton<Content: View>: View {
                     }
             )
             .onFrameChange(update: $frame)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default, action)
     }
 }
 
@@ -364,6 +393,8 @@ private struct SettingsButton: View {
                 .foregroundStyle(.secondary)
                 .padding(2)
         }
+        .accessibilityLabel("Open Ice settings")
+        .accessibilityHint("Opens the Ice settings window")
     }
 }
 
@@ -392,6 +423,8 @@ private struct ShowItemButton: View {
                     }
             }
         }
+        .accessibilityLabel(item.isOnScreen ? "Click \(item.displayName)" : "Show \(item.displayName)")
+        .accessibilityHint("Activates this menu bar item")
     }
 }
 

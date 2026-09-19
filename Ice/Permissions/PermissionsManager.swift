@@ -69,6 +69,11 @@ final class PermissionsManager: ObservableObject {
         cancellables = c
     }
 
+    /// Low-frequency runtime revalidation after onboarding has stopped polling.
+    func refreshPermissions() {
+        for permission in allPermissions { permission.refresh() }
+    }
+
     /// Stops running all permissions checks.
     func stopAllChecks() {
         for permission in allPermissions {

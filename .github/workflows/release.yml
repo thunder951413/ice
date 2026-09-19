@@ -76,26 +76,32 @@ jobs:
         run: |
           set -euo pipefail
           new_build=$(python3 Scripts/verify-release.py --print-appcast-build --appcast release-assets/appcast.xml)
-          if gh api "repos/$REPOSITORY/contents/appcast.xml?ref=updates" > existing-appcast.json 2> existing-appcast-error.log; then
-            jq -r '.content' existing-appcast.json | tr -d '\n' | base64 --decode > existing-appcast.xml
-            old_build=$(python3 Scripts/verify-release.py --print-appcast-build --appcast existing-appcast.xml)
-            if (( new_build > old_build )); then
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/$REPOSITORY/contents/appcast.xml?ref=updates" > existing-appcast.json 2> existing-appcast-error.log; then
+              jq -r '.content' existing-appcast.json | tr -d '\n' | base64 --decode > existing-appcast.xml
+              old_build=$(python3 Scripts/verify-release.py --print-appcast-build --appcast existing-appcast.xml)
+              if (( new_build > old_build )); then
+                echo "PUBLISH_FEED=true" >> "$GITHUB_ENV"
+                echo "LATEST_ARGUMENT=--latest" >> "$GITHUB_ENV"
+              elif (( new_build < old_build )); then
+                echo "PUBLISH_FEED=false" >> "$GITHUB_ENV"
+                echo "LATEST_ARGUMENT=--latest=false" >> "$GITHUB_ENV"
+              else
+                echo "PUBLISH_FEED=false" >> "$GITHUB_ENV"
+                echo "LATEST_ARGUMENT=" >> "$GITHUB_ENV"
+              fi
+              exit 0
+            elif grep -q '404' existing-appcast-error.log; then
               echo "PUBLISH_FEED=true" >> "$GITHUB_ENV"
               echo "LATEST_ARGUMENT=--latest" >> "$GITHUB_ENV"
-            elif (( new_build < old_build )); then
-              echo "PUBLISH_FEED=false" >> "$GITHUB_ENV"
-              echo "LATEST_ARGUMENT=--latest=false" >> "$GITHUB_ENV"
-            else
-              echo "PUBLISH_FEED=false" >> "$GITHUB_ENV"
-              echo "LATEST_ARGUMENT=" >> "$GITHUB_ENV"
+              exit 0
+            elif (( attempt == 5 )); then
+              cat existing-appcast-error.log >&2
+              exit 1
             fi
-          elif grep -q '404' existing-appcast-error.log; then
-            echo "PUBLISH_FEED=true" >> "$GITHUB_ENV"
-            echo "LATEST_ARGUMENT=--latest" >> "$GITHUB_ENV"
-          else
-            cat existing-appcast-error.log >&2
-            exit 1
-          fi
+            echo "Feed read attempt $attempt failed; retrying." >&2
+            sleep $((attempt * 2))
+          done
 
       - name: Publish the verified draft
         shell: bash
@@ -119,28 +125,91 @@ jobs:
             echo "The updates feed is already as new or newer; leaving it unchanged."
             exit 0
           fi
-          if gh api "repos/$REPOSITORY/git/ref/heads/updates" > updates-ref.json 2> updates-ref-error.log; then
-            :
-          elif grep -q '404' updates-ref-error.log; then
-            jq -n --arg ref refs/heads/updates --arg sha "$RELEASE_SHA" '{ref: $ref, sha: $sha}' > create-ref.json
-            gh api --method POST "repos/$REPOSITORY/git/refs" --input create-ref.json > /dev/null
-          else
-            cat updates-ref-error.log >&2
-            exit 1
-          fi
-
-          file_sha=''
-          if gh api "repos/$REPOSITORY/contents/appcast.xml?ref=updates" > existing-appcast.json 2> existing-appcast-error.log; then
-            file_sha=$(jq -r '.sha' existing-appcast.json)
-          elif ! grep -q '404' existing-appcast-error.log; then
-            cat existing-appcast-error.log >&2
-            exit 1
-          fi
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/$REPOSITORY/git/ref/heads/updates" > updates-ref.json 2> updates-ref-error.log; then
+              break
+            elif grep -q '404' updates-ref-error.log; then
+              jq -n --arg ref refs/heads/updates --arg sha "$RELEASE_SHA" '{ref: $ref, sha: $sha}' > create-ref.json
+              gh api --method POST "repos/$REPOSITORY/git/refs" --input create-ref.json > /dev/null
+              break
+            elif (( attempt == 5 )); then
+              cat updates-ref-error.log >&2
+              exit 1
+            fi
+            echo "Updates-branch read attempt $attempt failed; retrying." >&2
+            sleep $((attempt * 2))
+          done
 
           content=$(base64 --wrap=0 release-assets/appcast.xml)
-          if [[ -n "$file_sha" ]]; then
-            jq -n --arg message "Publish appcast for $TAG" --arg content "$content" --arg branch updates --arg sha "$file_sha" '{message: $message, content: $content, branch: $branch, sha: $sha}' > put-appcast.json
-          else
-            jq -n --arg message "Publish appcast for $TAG" --arg content "$content" --arg branch updates '{message: $message, content: $content, branch: $branch}' > put-appcast.json
+          new_build=$(python3 Scripts/verify-release.py --print-appcast-build --appcast release-assets/appcast.xml)
+          published=false
+          for attempt in 1 2 3 4 5; do
+            file_sha=''
+            if gh api "repos/$REPOSITORY/contents/appcast.xml?ref=updates" > existing-appcast.json 2> existing-appcast-error.log; then
+              file_sha=$(jq -r '.sha' existing-appcast.json)
+              jq -r '.content' existing-appcast.json | tr -d '\n' | base64 --decode > existing-appcast.xml
+              remote_build=$(python3 Scripts/verify-release.py --print-appcast-build --appcast existing-appcast.xml)
+              if (( remote_build >= new_build )); then
+                echo "Remote feed build $remote_build is already as new or newer than $new_build; preserving it."
+                if (( remote_build > new_build )); then
+                  gh release edit "$TAG" --repo "$REPOSITORY" --latest=false
+                fi
+                exit 0
+              fi
+            elif ! grep -q '404' existing-appcast-error.log; then
+              if (( attempt == 5 )); then
+                cat existing-appcast-error.log >&2
+                exit 1
+              fi
+              echo "Feed read attempt $attempt failed; retrying before any write." >&2
+              sleep $((attempt * 2))
+              continue
+            fi
+
+            if [[ -n "$file_sha" ]]; then
+              jq -n --arg message "Publish appcast for $TAG" --arg content "$content" --arg branch updates --arg sha "$file_sha" '{message: $message, content: $content, branch: $branch, sha: $sha}' > put-appcast.json
+            else
+              jq -n --arg message "Publish appcast for $TAG" --arg content "$content" --arg branch updates '{message: $message, content: $content, branch: $branch}' > put-appcast.json
+            fi
+
+            if gh api --method PUT "repos/$REPOSITORY/contents/appcast.xml" --input put-appcast.json > put-result.json 2> put-error.log; then
+              published=true
+              break
+            fi
+            if (( attempt == 5 )); then
+              cat put-error.log >&2
+              exit 1
+            fi
+            echo "Feed write attempt $attempt conflicted or failed; re-fetching the file SHA." >&2
+            sleep $((attempt * 2))
+          done
+          [[ "$published" == true ]]
+
+          api_verified=false
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/$REPOSITORY/contents/appcast.xml?ref=updates" --jq .content \
+                2> published-appcast-error.log \
+                | tr -d '\n' | base64 --decode > published-appcast.xml \
+                && cmp --silent release-assets/appcast.xml published-appcast.xml; then
+              api_verified=true
+              break
+            fi
+            sleep $((attempt * 2))
+          done
+          if [[ "$api_verified" != true ]]; then
+            cat published-appcast-error.log >&2
+            echo "The appcast read back through GitHub's API differs from the verified asset." >&2
+            exit 1
           fi
-          gh api --method PUT "repos/$REPOSITORY/contents/appcast.xml" --input put-appcast.json > /dev/null
+
+          raw_url="https://raw.githubusercontent.com/$REPOSITORY/updates/appcast.xml"
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error "$raw_url?release=$TAG&attempt=$attempt" \
+                --output public-appcast.xml \
+                && cmp --silent release-assets/appcast.xml public-appcast.xml; then
+              exit 0
+            fi
+            sleep $((attempt * 2))
+          done
+          echo "The public update URL did not serve the verified appcast after bounded retries." >&2
+          exit 1

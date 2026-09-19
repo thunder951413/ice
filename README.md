@@ -26,9 +26,10 @@
 - **原生 Ice 图标**：在 General 中通过 Show Ice icon 和 Ice icon 选择显示状态及样式；点击图标或菜单栏空白区域展开。
 - **紧凑 Ice Bar**：独立浅色／深色背景、磨砂或实色样式、圆角与阴影。
 - **可调尺寸**：General → Use Ice Bar 下设置 Icon size、Icon spacing、Background padding；支持保存和 Reset sizes。
-- **常用操作**：Escape 收起；右键 Bar 的背景可搜索、打开布局设置、打开 Bar 设置或恢复隐藏项目。右键应用图标保留该应用的次要操作。
+- **常用操作**：Escape 收起，方向键选择，Return／空格打开；右键 Bar 的背景可搜索、打开设置或暂停隐藏。右键应用图标保留该应用的次要操作。
 - **分区管理**：Visible、Hidden、Always-Hidden；自动收起、快捷键和登录启动。
-- **降低空闲开销**：共享短时菜单栏快照，移除不需要的图像与背景取色轮询。
+- **无损暂停**：Pause Hiding 临时显示所有项目，Resume Hiding 恢复原分区；Reset Menu Bar Layout 是单独的确认操作。
+- **响应与恢复**：串行后台扫描菜单栏，合并重复请求并限制扫描时间；搜索先显示再刷新。隐藏切换保留旧状态直到新状态生效，支持超时、重试和权限恢复。
 
 默认图标为 **28 pt**，项目热区间距 **2 pt**，背景上下留白 **4 pt**，可见背景高度约 **40 pt**。尺寸范围分别为 16–36、0–12、2–12 pt。
 
@@ -36,7 +37,7 @@
 
 在 **Menu Bar Layout** 中点击或右键一个应用图标，为它选择所属分区。macOS 27 上同一应用的菜单栏项目按应用一起管理；布局页不支持逐项拖动排序，可在系统菜单栏中使用 Command 拖动。
 
-该路径使用所属应用的图标预览，屏幕录制权限为可选。系统菜单栏图标不能任意隐藏，部分 Apple 菜单附加项可能受系统限制影响；Show All Hidden Items 或退出 Ice 可以恢复访问。
+该路径使用所属应用的图标预览，屏幕录制权限为可选。系统菜单栏图标不能任意隐藏，部分 Apple 菜单附加项可能受系统限制影响；Pause Hiding 或退出 Ice 可以恢复访问。
 
 最低构建目标仍为 macOS 14。本轮实机验收在 macOS 27 / Apple Silicon 完成，通用包包含 arm64 和 x86_64；旧系统、Intel 实机、多屏热插拔、睡眠唤醒和所有全屏组合未完成运行验证。macOS 27 的隐藏实现依赖私有接口，系统更新可能改变行为。
 
@@ -46,7 +47,9 @@
 
 Sparkle 更新源来自本仓库 `updates` 分支的 `appcast.xml`，更新包来自本仓库 GitHub Releases。发行包使用本分支独立的 **Ed25519 签名**，不再信任或检查原作者的更新源。
 
-仓库若为私有，需要有仓库读取权限的 GitHub 令牌。在 **About → GitHub updates** 中保存令牌；推荐仅授予此仓库 **Contents: Read-only** 的细粒度令牌。令牌只保存在本机钥匙串中，不写入普通偏好设置或发行包。公开仓库无需令牌。
+本仓库为公开仓库。0.12.1 起使用公开静态更新清单和 Release 下载地址，**无需 GitHub 令牌**，避免匿名 API 额度耗尽导致更新失败。旧版本保存的钥匙串记录不会被读取或发送。
+
+若 0.12.0 的检查更新提示网络错误，请手动安装 0.12.1 一次，之后即可使用新更新通道。
 
 从旧上游版本切换到本分支时，请先手动安装一次本仓库发行包，以切换更新源与签名公钥。仅修改网址无法让旧版本接受新的签名。
 
@@ -58,6 +61,10 @@ Sparkle 更新源来自本仓库 `updates` 分支的 `appcast.xml`，更新包�
 ./Scripts/build-local.sh -quiet
 CONFIGURATION=Release ./Scripts/build-local.sh -quiet
 ./Scripts/test-hosted-visibility-policy.sh
+./Scripts/test-menu-bar-click-policy.sh
+./Scripts/test-hosted-enumeration-scan-policy.sh
+./Scripts/test-visibility-assertion-session.sh
+python3 Scripts/test-verify-release.py
 ./Scripts/test-icebar-surface.sh
 # 先退出 Ice；该测试仅操作临时测试应用
 ./Scripts/test-hosted-visibility.sh

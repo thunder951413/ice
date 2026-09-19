@@ -111,11 +111,51 @@ enum HostedMenuBarBackend {
     /// ``enumerate()`` simultaneously (e.g. the 5s timer fires while the user
     /// clicks the Ice icon).
     private static let enumerationLock = NSLock()
+    /// Accessibility queries can block in another process. Keep the complete
+    /// walk off the main actor, and serialize it so a burst of layout events
+    /// becomes one bounded scan instead of several competing scans.
+    private static let enumerationQueue = DispatchQueue(label: "com.jordansamuel.ice.hosted-menu-bar-enumeration")
     /// Set while an enumeration is in progress so callers can short-circuit
     /// instead of piling up behind the lock and then all re-running the scan.
     private static var isEnumerating = false
     private static var cacheGeneration = 0
+    /// Circular cursor used by bounded macOS 27 scans. A slow app cannot keep
+    /// later owners permanently beyond the total scan budget.
+    private static var enumerationCursor = 0
+    private static var enumerationWaiters = [CheckedContinuation<[HostedMenuBarItemHandle], Never>]()
+    private static var pendingEnumerationSnapshot: EnumerationSnapshot?
     private static var concealedBundleIdentifiers = Set<String>()
+    private static let perApplicationTimeout: Float = 0.15
+    private static let perApplicationBudget: TimeInterval = 0.35
+    private static let scanBudget: TimeInterval = 1.5
+
+    private struct ApplicationSnapshot: Sendable {
+        let pid: pid_t
+        let bundleIdentifier: String?
+        let isResponsive: Bool
+    }
+
+    private struct EnumerationSnapshot: Sendable {
+        let applications: [ApplicationSnapshot]
+        let displayBounds: [CGRect]
+    }
+
+    private struct EnumerationScan {
+        let items: [HostedMenuBarItemHandle]
+        let scannedPIDs: Set<pid_t>
+        let livePIDs: Set<pid_t>
+        let nextCursor: Int
+    }
+
+    private enum AttributeRead<Value> {
+        case value(Value)
+        /// The owner answered, but does not expose this attribute. This is a
+        /// genuine absence and may clear descriptors for that owner.
+        case absent
+        /// AX could not answer reliably (including cannotComplete/timeout).
+        /// Preserve the prior owner snapshot and retry on a later cursor lap.
+        case failed(AXError)
+    }
 
     static func isConcealed(_ bundleIdentifier: String?) -> Bool {
         guard let bundleIdentifier else { return false }
@@ -128,7 +168,7 @@ enum HostedMenuBarBackend {
         enumerationLock.lock()
         concealedBundleIdentifiers = identifiers
         cacheGeneration += 1
-        enumerationCache = nil
+        expireEnumerationCacheLocked()
         hitFrameCache.removeAll()
         renderedSnapshot = nil
         enumerationLock.unlock()
@@ -170,6 +210,17 @@ enum HostedMenuBarBackend {
     /// definitely-fresh snapshot can pass `forceRefresh: true`, but this should
     /// be reserved for explicit user actions (never for periodic timers).
     static func enumerate(forceRefresh: Bool = false) -> [HostedMenuBarItemHandle] {
+        // On hosted menu bars this method is called from paint, event, and
+        // timer paths. It must only return the last complete snapshot; schedule
+        // a refresh rather than allowing a synchronous AX walk on the main
+        // thread. Pre-27 keeps the existing synchronous behavior.
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+            requestEnumerationRefresh(force: forceRefresh)
+            enumerationLock.lock()
+            let cached = enumerationCache?.items ?? []
+            enumerationLock.unlock()
+            return cached
+        }
         guard AXIsProcessTrusted() else {
             logger.warning("Accessibility permission is unavailable")
             return []
@@ -189,7 +240,7 @@ enum HostedMenuBarBackend {
         let generation = cacheGeneration
         enumerationLock.unlock()
 
-        let result = enumerateUncached()
+        let result = enumerateUncached().items
         enumerationLock.lock()
         if generation == cacheGeneration { enumerationCache = (.now, result) }
         isEnumerating = false
@@ -197,31 +248,207 @@ enum HostedMenuBarBackend {
         return result
     }
 
-    private static func enumerateUncached() -> [HostedMenuBarItemHandle] {
+    /// Refreshes the hosted descriptor snapshot. This is intended for an
+    /// explicit action which needs to await a new scan (for example, retrying a
+    /// click after revealing an item). Concurrent requests join the same scan.
+    @MainActor
+    static func refreshEnumeration(force: Bool = false) async -> [HostedMenuBarItemHandle] {
+        guard AXIsProcessTrusted() else { return [] }
+        let cachedItems = enumerationLock.withLock { () -> [HostedMenuBarItemHandle]? in
+            guard !force, let cached = enumerationCache,
+                  Date.now.timeIntervalSince(cached.date) < enumerationTTL else { return nil }
+            return cached.items
+        }
+        if let cachedItems { return cachedItems }
+        return await refreshEnumeration(snapshot: makeEnumerationSnapshot(), force: force)
+    }
+
+    /// Requests a refresh without making a UI path wait for it.
+    static func requestEnumerationRefresh(force: Bool = false) {
+        guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else { return }
+        enumerationLock.lock()
+        let cacheIsFresh = enumerationCache.map {
+            Date.now.timeIntervalSince($0.date) < enumerationTTL
+        } ?? false
+        let shouldRequest = HostedEnumerationScanPolicy.shouldRequestRefresh(
+            cacheIsFresh: cacheIsFresh, scanInFlight: isEnumerating, force: force
+        )
+        enumerationLock.unlock()
+        guard shouldRequest else { return }
+        Task { @MainActor in
+            _ = await refreshEnumeration(force: force)
+        }
+    }
+
+    @MainActor
+    private static func makeEnumerationSnapshot() -> EnumerationSnapshot {
+        let applications = NSWorkspace.shared.runningApplications.compactMap { app -> ApplicationSnapshot? in
+            guard app.isFinishedLaunching, !app.isTerminated else { return nil }
+            return ApplicationSnapshot(
+                pid: app.processIdentifier,
+                bundleIdentifier: app.bundleIdentifier,
+                isResponsive: Bridging.responsivity(for: app.processIdentifier) != .unresponsive
+            )
+        }
+        // NSWorkspace and NSScreen are AppKit snapshots and must stay on main.
+        return EnumerationSnapshot(applications: applications,
+                                   displayBounds: NSScreen.screens.map { CGDisplayBounds($0.displayID) })
+    }
+
+    private static func refreshEnumeration(snapshot: EnumerationSnapshot, force: Bool) async -> [HostedMenuBarItemHandle] {
+        await withCheckedContinuation { continuation in
+            enumerationLock.lock()
+            if !force, let cached = enumerationCache,
+               Date.now.timeIntervalSince(cached.date) < enumerationTTL {
+                enumerationLock.unlock()
+                continuation.resume(returning: cached.items)
+                return
+            }
+            enumerationWaiters.append(continuation)
+            if isEnumerating {
+                // Keep the newest main-thread view of processes and displays;
+                // it is used if the in-flight scan is invalidated.
+                pendingEnumerationSnapshot = snapshot
+                enumerationLock.unlock()
+                return
+            }
+            isEnumerating = true
+            let generation = cacheGeneration
+            let cursor = enumerationCursor
+            enumerationLock.unlock()
+            startEnumeration(snapshot: snapshot, generation: generation, cursor: cursor)
+        }
+    }
+
+    private static func startEnumeration(snapshot: EnumerationSnapshot, generation: Int, cursor: Int) {
+        enumerationQueue.async {
+            let result = enumerateUncached(snapshot: snapshot, cursor: cursor)
+            enumerationLock.lock()
+            if generation == cacheGeneration {
+                enumerationCursor = result.nextCursor
+                // A budgeted scan only replaces descriptors for owners it
+                // actually queried. Existing descriptors for later owners stay
+                // available until their turn, while exited owners are removed.
+                let retainedOwners = HostedEnumerationScanPolicy.retainedOwners(
+                    existing: Set((enumerationCache?.items ?? []).map(\.sourcePID)),
+                    live: result.livePIDs,
+                    scanned: result.scannedPIDs
+                )
+                let retained = (enumerationCache?.items ?? []).filter {
+                    retainedOwners.contains($0.sourcePID)
+                }
+                enumerationCache = (.now, retained + result.items)
+            } else if let newerSnapshot = pendingEnumerationSnapshot {
+                // A launch/quit/display event arrived while AX was blocked. Do
+                // not publish its old result; immediately coalesce waiters onto
+                // one replacement scan using the newer main-thread snapshot.
+                pendingEnumerationSnapshot = nil
+                let newerGeneration = cacheGeneration
+                let newerCursor = enumerationCursor
+                enumerationLock.unlock()
+                startEnumeration(snapshot: newerSnapshot, generation: newerGeneration, cursor: newerCursor)
+                return
+            }
+            // An invalidation while AX was blocked makes the result stale.
+            // Return the newer cache (or nothing), never the stale result.
+            let reply = enumerationCache?.items ?? []
+            let waiters = enumerationWaiters
+            enumerationWaiters.removeAll()
+            isEnumerating = false
+            pendingEnumerationSnapshot = nil
+            enumerationLock.unlock()
+            waiters.forEach { $0.resume(returning: reply) }
+        }
+    }
+
+    private static func enumerateUncached(snapshot: EnumerationSnapshot? = nil, cursor: Int = 0) -> EnumerationScan {
         var result = [HostedMenuBarItemHandle]()
         var stableIDOccurrences = [String: Int]()
+        // The bounded scan is specific to the macOS 27 hosted path. Keep the
+        // established 14–26 fallback behavior unchanged.
+        let deadline = snapshot.map { _ in Date.now.addingTimeInterval(scanBudget) }
 
-        for app in NSWorkspace.shared.runningApplications {
-            guard
-                app.isFinishedLaunching,
-                !app.isTerminated,
-                Bridging.responsivity(for: app.processIdentifier) != .unresponsive
-            else {
+        let applications: [ApplicationSnapshot]
+        let displayBounds: [CGRect]
+        if let snapshot {
+            applications = snapshot.applications
+            displayBounds = snapshot.displayBounds
+        } else {
+            // Legacy callers retain their previous behavior.
+            applications = NSWorkspace.shared.runningApplications.compactMap { app in
+                guard app.isFinishedLaunching, !app.isTerminated,
+                      Bridging.responsivity(for: app.processIdentifier) != .unresponsive else { return nil }
+                return ApplicationSnapshot(pid: app.processIdentifier, bundleIdentifier: app.bundleIdentifier, isResponsive: true)
+            }
+            displayBounds = NSScreen.screens.map { CGDisplayBounds($0.displayID) }
+        }
+
+        let scannableApplications = snapshot == nil
+            ? applications
+            : applications.filter(\.isResponsive)
+        let start = scannableApplications.isEmpty ? 0 : cursor % scannableApplications.count
+        let orderedApplications = snapshot != nil
+            ? HostedEnumerationScanPolicy.orderedIndices(count: scannableApplications.count, cursor: cursor).map { scannableApplications[$0] }
+            : scannableApplications
+        var scannedPIDs = Set<pid_t>()
+        var nextCursor = start
+
+        applicationLoop: for (offset, app) in orderedApplications.enumerated() {
+            guard deadline.map({ Date.now < $0 }) ?? true else {
+                logger.warning("Hosted menu bar enumeration exceeded its scan budget")
+                break
+            }
+            if !scannableApplications.isEmpty {
+                nextCursor = HostedEnumerationScanPolicy.nextCursor(
+                    count: scannableApplications.count, cursor: start, scannedCount: offset + 1
+                )
+            }
+            let applicationDeadline = deadline.map {
+                min($0, Date.now.addingTimeInterval(perApplicationBudget))
+            } ?? .distantFuture
+            let itemStartIndex = result.endIndex
+
+            let appElement = AXUIElementCreateApplication(app.pid)
+            AXUIElementSetMessagingTimeout(appElement, perApplicationTimeout)
+            let menuBar: AXUIElement
+            switch attributeRead(kAXExtrasMenuBarAttribute, of: appElement) as AttributeRead<AXUIElement> {
+            case let .value(value):
+                menuBar = value
+            case .absent:
+                scannedPIDs.insert(app.pid)
+                continue
+            case let .failed(error):
+                logger.debug("Could not read hosted menu bar for pid \(app.pid): \(String(describing: error))")
                 continue
             }
-
-            let appElement = AXUIElementCreateApplication(app.processIdentifier)
-            AXUIElementSetMessagingTimeout(appElement, 0.15)
-            guard let menuBar: AXUIElement = attribute(kAXExtrasMenuBarAttribute, of: appElement) else {
+            let children: [AXUIElement]
+            switch attributeRead(kAXChildrenAttribute, of: menuBar) as AttributeRead<[AXUIElement]> {
+            case let .value(value):
+                children = value
+            case .absent:
+                scannedPIDs.insert(app.pid)
                 continue
-            }
-            guard let children: [AXUIElement] = attribute(kAXChildrenAttribute, of: menuBar) else {
+            case let .failed(error):
+                logger.debug("Could not read hosted menu bar children for pid \(app.pid): \(String(describing: error))")
                 continue
             }
 
             for element in children {
+                guard Date.now < applicationDeadline else {
+                    // Do not replace this owner's prior complete descriptors
+                    // with a prefix gathered before its individual budget ran
+                    // out. It will be retried after the cursor completes a lap.
+                    result.removeSubrange(itemStartIndex..<result.endIndex)
+                    logger.debug("Hosted menu bar enumeration timed out for pid \(app.pid)")
+                    continue applicationLoop
+                }
                 guard let frame = frame(of: element), frame.width > 0, frame.height > 0 else {
                     continue
+                }
+                guard Date.now < applicationDeadline else {
+                    result.removeSubrange(itemStartIndex..<result.endIndex)
+                    logger.debug("Hosted menu bar enumeration timed out for pid \(app.pid)")
+                    continue applicationLoop
                 }
 
                 let identifier: String? = attribute(kAXIdentifierAttribute, of: element)
@@ -236,10 +463,15 @@ enum HostedMenuBarBackend {
                     return value
                 }
                 let title = identityStrings.first
+                guard Date.now < applicationDeadline else {
+                    result.removeSubrange(itemStartIndex..<result.endIndex)
+                    logger.debug("Hosted menu bar enumeration timed out for pid \(app.pid)")
+                    continue applicationLoop
+                }
                 let role: String? = attribute(kAXRoleAttribute, of: element)
                 let subrole: String? = attribute(kAXSubroleAttribute, of: element)
                 let baseStableID = [
-                    app.bundleIdentifier ?? "pid:\(app.processIdentifier)",
+                    app.bundleIdentifier ?? "pid:\(app.pid)",
                     role ?? "",
                     subrole ?? "",
                     identifier.flatMap { $0.isEmpty ? nil : $0 } ?? "unidentified",
@@ -253,8 +485,12 @@ enum HostedMenuBarBackend {
                 let windowID = windowResult == .success && resolvedWindowID != 0
                     ? resolvedWindowID
                     : nil
-                let isGlobalFrame = NSScreen.screens.contains { screen in
-                    let bounds = CGDisplayBounds(screen.displayID)
+                guard Date.now < applicationDeadline else {
+                    result.removeSubrange(itemStartIndex..<result.endIndex)
+                    logger.debug("Hosted menu bar enumeration timed out for pid \(app.pid)")
+                    continue applicationLoop
+                }
+                let isGlobalFrame = displayBounds.contains { bounds in
                     return frame.minY <= bounds.minY + 80 && frame.intersects(bounds)
                 }
                 // globalHitFrame is extremely expensive (hundreds of synchronous
@@ -266,7 +502,7 @@ enum HostedMenuBarBackend {
                 result.append(
                     HostedMenuBarItemHandle(
                         element: element,
-                        sourcePID: app.processIdentifier,
+                        sourcePID: app.pid,
                         sourceBundleIdentifier: app.bundleIdentifier,
                         stableID: stableID,
                         title: title,
@@ -279,6 +515,7 @@ enum HostedMenuBarBackend {
                     )
                 )
             }
+            scannedPIDs.insert(app.pid)
         }
 
         // AX can expose system-created clones at identical positions. Prefer one
@@ -289,7 +526,10 @@ enum HostedMenuBarBackend {
             return seen.insert(key).inserted
         }
         logger.debug("Discovered \(deduplicated.count) hosted menu bar items")
-        return deduplicated
+        return EnumerationScan(items: deduplicated,
+                               scannedPIDs: scannedPIDs,
+                               livePIDs: Set(applications.map(\.pid)),
+                               nextCursor: nextCursor)
     }
 
     static func frame(of element: AXUIElement) -> CGRect? {
@@ -346,8 +586,9 @@ enum HostedMenuBarBackend {
         }
         // Multiple same-owner icons without identifiers cannot safely be picked
         // by index: refuse ambiguity instead of activating a neighboring item.
-        guard Set(matches.map(\.frame)).count == 1 else { return nil }
-        return matches.first
+        guard let first = matches.first,
+              matches.dropFirst().allSatisfy({ $0.frame == first.frame }) else { return nil }
+        return first
     }
 
     private static func renderedItems(forceRefresh: Bool = false) -> [RenderedItem] {
@@ -496,10 +737,17 @@ enum HostedMenuBarBackend {
     static func invalidateEnumerationCache() {
         enumerationLock.lock()
         cacheGeneration += 1
-        enumerationCache = nil
+        expireEnumerationCacheLocked()
         hitFrameCache.removeAll()
         renderedSnapshot = nil
         enumerationLock.unlock()
+    }
+
+    /// Keep descriptors across an invalidation so a budgeted replacement pass
+    /// can retain owners it has not yet reached. Generation checks still stop
+    /// the pre-invalidation AX result from ever being published.
+    private static func expireEnumerationCacheLocked() {
+        enumerationCache = enumerationCache.map { (date: .distantPast, items: $0.items) }
     }
 
     /// Invalidates the cached global hit-test frame for the given item.
@@ -517,12 +765,22 @@ enum HostedMenuBarBackend {
         enumerationLock.unlock()
     }
 
-    private static func attribute<T>(_ name: String, of element: AXUIElement) -> T? {
+    private static func attributeRead<T>(_ name: String, of element: AXUIElement) -> AttributeRead<T> {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
-            return nil
+        switch AXUIElementCopyAttributeValue(element, name as CFString, &value) {
+        case .success:
+            guard let typedValue = value as? T else { return .failed(.failure) }
+            return .value(typedValue)
+        case .noValue, .attributeUnsupported:
+            return .absent
+        case let error:
+            return .failed(error)
         }
-        return value as? T
+    }
+
+    private static func attribute<T>(_ name: String, of element: AXUIElement) -> T? {
+        guard case let .value(value) = attributeRead(name, of: element) as AttributeRead<T> else { return nil }
+        return value
     }
 
     private static func firstNonemptyString(_ values: [String?]) -> String? {

@@ -14,18 +14,15 @@ from pathlib import Path
 
 SPARKLE = 'http://www.andymatuschak.org/xml-namespaces/sparkle'
 REPOSITORY = 'thunder951413/ice'
-FEED_URL = f'https://api.github.com/repos/{REPOSITORY}/contents/appcast.xml?ref=updates'
+FEED_URL = f'https://raw.githubusercontent.com/{REPOSITORY}/updates/appcast.xml'
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--asset-id', required=True, type=int)
     parser.add_argument('--directory', required=True, type=Path)
     parser.add_argument('--sparkle-bin', type=Path, default=Path('build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin'))
     parser.add_argument('--account', default='thunder951413-ice')
     args = parser.parse_args()
-    if args.asset_id <= 0:
-        parser.error('--asset-id must be positive')
     archive = args.directory / 'Ice.zip'
     with zipfile.ZipFile(archive) as bundle:
         info = plistlib.loads(bundle.read('Ice.app/Contents/Info.plist'))
@@ -57,7 +54,7 @@ def main():
     # Inline release notes avoid forwarding update credentials to another host.
     ET.SubElement(item, 'description').text = 'See the GitHub Release for changes and compatibility notes.'
     ET.SubElement(item, 'enclosure', {
-        'url': f'https://api.github.com/repos/{REPOSITORY}/releases/assets/{args.asset_id}',
+        'url': f'https://github.com/{REPOSITORY}/releases/download/v{version}/Ice.zip',
         'length': str(archive.stat().st_size), 'type': 'application/octet-stream',
         f'{{{SPARKLE}}}edSignature': signature,
     })

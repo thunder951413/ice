@@ -23,12 +23,7 @@ from pathlib import Path
 
 
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
-ASSET_URL = re.compile(
-    r"https://api\.github\.com/repos/thunder951413/ice/releases/assets/[1-9][0-9]*\Z"
-)
-EXPECTED_FEED_URL = (
-    "https://api.github.com/repos/thunder951413/ice/contents/appcast.xml?ref=updates"
-)
+EXPECTED_FEED_URL = "https://raw.githubusercontent.com/thunder951413/ice/updates/appcast.xml"
 SHA256SUMS = re.compile(r"([0-9a-fA-F]{64})[ \t]+\*?Ice\.zip\Z")
 
 
@@ -45,6 +40,12 @@ def positive_integer(value: object, label: str) -> int:
     if not re.fullmatch(r"[1-9][0-9]*", text):
         fail(f"{label} must be a positive integer, got {text!r}")
     return int(text)
+
+
+def expected_archive_url(tag: str) -> str:
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        fail(f"invalid release tag {tag!r}")
+    return f"https://github.com/thunder951413/ice/releases/download/{tag}/Ice.zip"
 
 
 def sparkle_value(item: ET.Element, enclosure: ET.Element, name: str) -> str | None:
@@ -171,8 +172,7 @@ def verify_signature(zip_path: Path, public_key: str, signature: str) -> None:
 
 def verify(args: argparse.Namespace) -> None:
     tag = args.tag
-    if not re.fullmatch(r"v[^/\s]+", tag):
-        fail(f"invalid release tag {tag!r}")
+    archive_url = expected_archive_url(tag)
     zip_path = Path(args.zip)
     appcast_path = Path(args.appcast)
     sums_path = Path(args.sha256sums)
@@ -194,8 +194,8 @@ def verify(args: argparse.Namespace) -> None:
         fail("bundled CFBundleVersion does not match appcast sparkle:version")
     if metadata["short_version"] and metadata["short_version"] != short_version:
         fail("appcast sparkle:shortVersionString does not match bundled version")
-    if metadata["url"] and not ASSET_URL.fullmatch(metadata["url"]):
-        fail("appcast enclosure URL must be this repository's GitHub release asset API URL")
+    if metadata["url"] != archive_url:
+        fail("appcast enclosure URL must be the tagged public GitHub release archive URL")
     if metadata["type"] != "application/octet-stream":
         fail("appcast enclosure type must be application/octet-stream")
     if positive_integer(metadata["length"], "appcast enclosure length") != zip_path.stat().st_size:
@@ -205,9 +205,9 @@ def verify(args: argparse.Namespace) -> None:
     if not bundled_key or bundled_key != repo_key:
         fail("bundled SUPublicEDKey does not match Ice/Info.plist")
     if str(bundled_info.get("SUFeedURL", "")) != EXPECTED_FEED_URL:
-        fail("bundled SUFeedURL is not the required updates-branch contents URL")
+        fail("bundled SUFeedURL is not the required public updates-branch URL")
     if str(repo_info.get("SUFeedURL", "")) != EXPECTED_FEED_URL:
-        fail("Ice/Info.plist SUFeedURL is not the required updates-branch contents URL")
+        fail("Ice/Info.plist SUFeedURL is not the required public updates-branch URL")
     read_sha256sums(sums_path, zip_path)
     verify_signature(zip_path, bundled_key, metadata["signature"])
     print(f"Verified {tag}: version {short_version}, build {build}")

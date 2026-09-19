@@ -104,7 +104,7 @@ private struct HostedVisibilityNotice: View {
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
         }
-        Text("Click the Ice icon or empty menu bar space to show hidden items. Right-click for Ice settings. Some Apple menu extras may be unavailable while items are hidden; Show All Hidden Items restores them. App icons are used for previews; Screen Recording is optional.")
+        Text("Click the Ice icon or empty menu bar space to show hidden items. Right-click for Ice settings. Some Apple menu extras may be unavailable while items are hidden; Pause Hiding restores them without changing your layout. App icons are used for previews; Screen Recording is optional.")
             .font(.callout)
             .foregroundStyle(.secondary)
     }

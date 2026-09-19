@@ -5,7 +5,7 @@
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://api.github.com/repos/thunder951413/ice/contents/appcast.xml?ref=updates</string>
+	<string>https://raw.githubusercontent.com/thunder951413/ice/updates/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>ELi6h+mOUUn+mkvvCJOTPXa4Th1iygE/zZq6ufdyNHI=</string>
 </dict>

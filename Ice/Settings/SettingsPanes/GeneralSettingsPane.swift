@@ -13,6 +13,7 @@ struct GeneralSettingsPane: View {
     @State private var presentedError: LocalizedErrorWrapper?
     @State private var isApplyingOffset = false
     @State private var tempItemSpacingOffset: CGFloat = 0 // Temporary state for the slider
+    @State private var isConfirmingLayoutReset = false
 
     private var manager: GeneralSettingsManager {
         appState.settingsManager.generalSettingsManager
@@ -83,6 +84,18 @@ struct GeneralSettingsPane: View {
                 presentedError = nil
                 isPresentingError = false
             }
+        }
+        .confirmationDialog(
+            "Reset menu bar layout?",
+            isPresented: $isConfirmingLayoutReset,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Menu Bar Layout", role: .destructive) {
+                appState.menuBarManager.resetModifications()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This reveals all items, restores default spacing, and clears Ice's saved item arrangement.")
         }
     }
 
@@ -360,15 +373,32 @@ struct GeneralSettingsPane: View {
 
     @ViewBuilder
     private var recoverOptions: some View {
-        IceLabeledContent {
-            Button("Show All Hidden Items") {
-                appState.menuBarManager.resetModifications()
+        HStack(alignment: .top) {
+            Text("Menu bar recovery")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(0)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                Button(appState.menuBarManager.isHidingPaused ? "Resume Hiding Menu Bar Items" : "Pause Hiding Menu Bar Items") {
+                    appState.menuBarManager.toggleHidingPaused()
+                }
+                .accessibilityLabel(appState.menuBarManager.isHidingPaused ? "Resume hiding menu bar items" : "Pause hiding menu bar items")
+                .accessibilityHint(appState.menuBarManager.isHidingPaused
+                    ? "Restores the menu bar hiding state from before the pause"
+                    : "Temporarily reveals items without changing the saved menu bar layout")
+
+                Button("Reset Menu Bar Layout…", role: .destructive) {
+                    isConfirmingLayoutReset = true
+                }
+                .accessibilityLabel("Reset menu bar layout")
+                .accessibilityHint("Opens a confirmation before resetting the saved layout and spacing")
             }
-        } label: {
-            Text("Recover hidden items")
+            .layoutPriority(1)
+            .accessibilityElement(children: .contain)
         }
+        .accessibilityElement(children: .contain)
         .annotation(
-            "Reveals every item Ice is hiding and restores the default spacing. Use this if menu bar items have become invisible."
+            "Pause hiding temporarily to recover items, or reset the saved layout and spacing if items remain inaccessible."
         )
     }
 

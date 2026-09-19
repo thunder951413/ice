@@ -191,7 +191,9 @@ final class MenuBarItemManager: ObservableObject {
     private func configureCancellables() {
         var c = Set<AnyCancellable>()
 
-        Timer.publish(every: 5, on: .main, in: .default)
+        // Workspace and screen notifications below normally request a refresh.
+        // The timer is only a conservative recovery path on hosted menu bars.
+        Timer.publish(every: HostedItemVisibilityManager.isSupported ? 30 : 5, on: .main, in: .default)
             .autoconnect()
             .merge(with: Just(.now))
             .sink { [weak self] _ in
@@ -406,7 +408,10 @@ extension MenuBarItemManager {
         }
 
         if HostedItemVisibilityManager.isSupported {
-            cacheHostedItems()
+            let discovered = await HostedMenuBarBackend.refreshEnumeration()
+                .map(MenuBarItem.init(hostedHandle:))
+                .filter { $0.ownerPID != ProcessInfo.processInfo.processIdentifier }
+            cacheHostedItems(discovered: discovered)
             return
         }
 
@@ -501,8 +506,8 @@ extension MenuBarItemManager {
 
     /// Preserve concealed descriptors while their owner is alive: the native
     /// assertion removes them from AX, so absence is not an uninstall signal.
-    private func cacheHostedItems() {
-        let discovered = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+    private func cacheHostedItems(discovered: [MenuBarItem]? = nil) {
+        let discovered = (discovered ?? itemCache.allItems)
             .filter { $0.hostedHandle != nil && $0.ownerPID != ProcessInfo.processInfo.processIdentifier }
         let livePIDs = Set(NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }.map(\.processIdentifier))
         hostedItemSnapshots = hostedItemSnapshots.filter { livePIDs.contains($0.value.ownerPID) }
@@ -545,6 +550,8 @@ extension MenuBarItemManager {
             hostedSectionAssignments[item.stableID] = section
         }
         persistHostedSectionAssignments()
+        // This synchronous assignment path must never start a new AX walk.
+        // The observer-driven refresh will merge a fresh descriptor snapshot.
         cacheHostedItems()
         cachedItemSignatures.removeAll()
     }
@@ -1839,6 +1846,23 @@ extension MenuBarItemManager {
         }
     }
 
+    private func presentHostedActivationFailure(_ item: MenuBarItem, error: Error, mouseButton: CGMouseButton) {
+        Logger.itemManager.error("Could not open hosted item: \(error.localizedDescription)")
+        let alert = NSAlert()
+        alert.messageText = "Couldn’t open \(item.displayName)"
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "Try Again")
+        if item.owningApplication?.bundleURL != nil { alert.addButton(withTitle: "Open App") }
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            tempShowItem(item, clickWhenFinished: true, mouseButton: mouseButton)
+        } else if response == .alertSecondButtonReturn, let url = item.owningApplication?.bundleURL {
+            NSWorkspace.shared.openApplication(at: url, configuration: .init())
+        }
+    }
+
     /// Temporarily shows the given item.
     ///
     /// The item is cached alongside a destination that it will be automatically returned
@@ -1853,19 +1877,29 @@ extension MenuBarItemManager {
     func tempShowItem(_ item: MenuBarItem, clickWhenFinished: Bool, mouseButton: CGMouseButton) {
         if HostedItemVisibilityManager.isSupported, item.hostedHandle != nil, let appState {
             Task {
-                await appState.menuBarManager.hostedItemVisibilityManager.temporarilyReveal(item)
-                guard clickWhenFinished else { return }
-                for _ in 0..<6 {
-                    let latest = MenuBarItem.getMenuBarItems(onScreenOnly: true, activeSpaceOnly: true, forceRefresh: true)
-                        .first { $0.stableID == item.stableID }
-                    if let latest {
-                        do { try await click(item: latest, with: mouseButton) }
-                        catch { Logger.itemManager.error("Could not open hosted item: \(error)") }
-                        return
+                do {
+                    try await appState.menuBarManager.hostedItemVisibilityManager.withTemporarilyRevealedItem(item) { validate in
+                        guard clickWhenFinished else { return }
+                        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+                        repeat {
+                            try validate()
+                            let latest = await HostedMenuBarBackend.refreshEnumeration(force: true)
+                                .map(MenuBarItem.init(hostedHandle:))
+                                .first { $0.stableID == item.stableID && $0.isOnScreen }
+                            try validate()
+                            if let latest {
+                                try await self.click(item: latest, with: mouseButton)
+                                return
+                            }
+                            try await Task.sleep(for: .milliseconds(150))
+                        } while ContinuousClock.now < deadline
+                        throw HostedItemVisibilityManager.RevealError.unavailable
                     }
-                    try? await Task.sleep(for: .milliseconds(150))
+                } catch is CancellationError {
+                    // A newer click, pause, or shutdown superseded this request.
+                } catch {
+                    self.presentHostedActivationFailure(item, error: error, mouseButton: mouseButton)
                 }
-                Logger.itemManager.warning("Revealed item could not be reacquired: \(item.logString)")
             }
             return
         }

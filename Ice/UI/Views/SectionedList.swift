@@ -187,6 +187,17 @@ private struct SectionedListItemView<ItemID: Hashable>: View {
     let item: SectionedListItem<ItemID>
 
     var body: some View {
+        if item.isSelectable {
+            itemBody
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(.default) { item.action?() }
+        } else {
+            itemBody
+        }
+    }
+
+    private var itemBody: some View {
         ZStack {
             if item.isSelectable {
                 if selection == item.id {
