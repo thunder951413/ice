@@ -5,13 +5,13 @@
     <link>https://github.com/thunder951413/ice/releases</link>
     <description>Signed Ice releases from thunder951413/ice.</description>
     <item>
-      <title>Ice 0.12.2</title>
-      <pubDate>Sat, 19 Sep 2026 12:18:38 GMT</pubDate>
-      <sparkle:version>1127</sparkle:version>
-      <sparkle:shortVersionString>0.12.2</sparkle:shortVersionString>
+      <title>Ice 0.12.3</title>
+      <pubDate>Mon, 21 Sep 2026 02:50:35 GMT</pubDate>
+      <sparkle:version>1128</sparkle:version>
+      <sparkle:shortVersionString>0.12.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <description>See the GitHub Release for changes and compatibility notes.</description>
-      <enclosure url="https://github.com/thunder951413/ice/releases/download/v0.12.2/Ice.zip" length="4839325" type="application/octet-stream" sparkle:edSignature="sspwZhpa2ON0Ews0aVPtet3lEMgIjciSe48kPexYirlHd34hhRov3ev1UETedtUGwAafQ8G8sg4xAJ7SRUTiCw==" />
+      <enclosure url="https://github.com/thunder951413/ice/releases/download/v0.12.3/Ice.zip" length="4839397" type="application/octet-stream" sparkle:edSignature="EO4Z0ZUalAh3fhTDB5J71mGlWVNasynGw+oaYbBJ3ETzO1iBvcUebBnGqeKPXHIBJ4t5VclGgbfaQTPMUcQ6CA==" />
     </item>
   </channel>
 </rss>
