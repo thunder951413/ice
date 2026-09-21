@@ -486,14 +486,7 @@ extension EventManager {
 extension EventManager {
     /// Returns the best screen to use for event manager calculations.
     var bestScreen: NSScreen? {
-        guard let appState else {
-            return nil
-        }
-        if appState.isActiveSpaceFullscreen {
-            return NSScreen.screenWithMouse ?? NSScreen.main
-        } else {
-            return NSScreen.main
-        }
+        return NSScreen.screenWithMouse ?? NSScreen.main
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
@@ -513,7 +506,8 @@ extension EventManager {
                 return menuBarWindow.frame.contains(mouseLocation)
             }
         } else if let mouseLocation = MouseCursor.locationAppKit {
-            return mouseLocation.y > screen.visibleFrame.maxY && mouseLocation.y <= screen.frame.maxY
+            return mouseLocation.x >= screen.frame.minX && mouseLocation.x < screen.frame.maxX &&
+                mouseLocation.y > screen.visibleFrame.maxY && mouseLocation.y <= screen.frame.maxY
         }
         return false
     }
@@ -525,12 +519,10 @@ extension EventManager {
             let mouseLocation = MouseCursor.locationCoreGraphics,
             let screen = bestScreen,
             let appState,
-            var applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
+            let applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
         else {
             return false
         }
-        applicationMenuFrame.size.width += applicationMenuFrame.origin.x - screen.frame.origin.x
-        applicationMenuFrame.origin.x = screen.frame.origin.x
         return applicationMenuFrame.contains(mouseLocation)
     }
 
@@ -574,10 +566,14 @@ extension EventManager {
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of an empty space in the menu bar.
     var isMouseInsideEmptyMenuBarSpace: Bool {
-        isMouseInsideMenuBar &&
-        !isMouseInsideApplicationMenu &&
-        !isMouseInsideMenuBarItem &&
-        !isMouseInsideNotch
+        guard isMouseInsideMenuBar, !isMouseInsideNotch,
+              let appState, let screen = bestScreen,
+              let point = MouseCursor.locationCoreGraphics else { return false }
+        guard ApplicationMenuGeometry.isEmptySpace(
+            at: point,
+            applicationMenuFrame: appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
+        ) else { return false }
+        return !isMouseInsideMenuBarItem
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within

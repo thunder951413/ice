@@ -16,6 +16,7 @@ on:
       - "Scripts/test-hosted-visibility-policy.sh"
       - "Scripts/test-hosted-enumeration-scan-policy.sh"
       - "Scripts/test-menu-bar-click-policy.sh"
+      - "Scripts/test-application-menu-geometry.sh"
       - "Scripts/test-login-item-manager.sh"
       - "Scripts/test-search-hotkey-availability.sh"
       - "Scripts/build-local.sh"
@@ -34,6 +35,7 @@ on:
       - "Scripts/test-hosted-visibility-policy.sh"
       - "Scripts/test-hosted-enumeration-scan-policy.sh"
       - "Scripts/test-menu-bar-click-policy.sh"
+      - "Scripts/test-application-menu-geometry.sh"
       - "Scripts/test-login-item-manager.sh"
       - "Scripts/test-search-hotkey-availability.sh"
       - "Scripts/build-local.sh"
@@ -70,6 +72,7 @@ jobs:
           ./Scripts/test-hosted-visibility-policy.sh
           ./Scripts/test-hosted-enumeration-scan-policy.sh
           ./Scripts/test-menu-bar-click-policy.sh
+          ./Scripts/test-application-menu-geometry.sh
           ./Scripts/test-login-item-manager.sh
           ./Scripts/test-search-hotkey-availability.sh
           ./Scripts/test-visibility-assertion-session.sh

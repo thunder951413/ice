@@ -24,6 +24,7 @@
 
 - **真实隐藏菜单栏项目**：macOS 27 使用新的系统菜单栏托管接口，隐藏后释放原位置。
 - **原生 Ice 图标**：在 General 中通过 Show Ice icon 和 Ice icon 选择显示状态及样式；点击图标或菜单栏空白区域展开。
+- **应用菜单不误触**：点击“文件／编辑”等菜单及标题间隙不会触发展开；无法确认菜单范围时保留应用自身点击行为。
 - **紧凑 Ice Bar**：独立浅色／深色背景、磨砂或实色样式、圆角与阴影。
 - **可调尺寸**：General → Use Ice Bar 下设置 Icon size、Icon spacing、Background padding；支持保存和 Reset sizes。
 - **常用操作**：Escape 收起，方向键选择，Return／空格打开；右键 Bar 的背景可搜索、打开设置或暂停隐藏。右键应用图标保留该应用的次要操作。

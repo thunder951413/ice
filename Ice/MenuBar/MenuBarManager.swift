@@ -301,37 +301,42 @@ final class MenuBarManager: ObservableObject {
     func getApplicationMenuFrame(for displayID: CGDirectDisplayID) -> CGRect? {
         let displayBounds = CGDisplayBounds(displayID)
 
+        // On hosted menu bars, hit-testing the exact display corner can return
+        // MenuBarAgent's window instead of AXMenuBar. Ask the app that owns the
+        // visible application menu, including disabled menu titles.
+        if let owner = NSWorkspace.shared.menuBarOwningApplication,
+           let application = Application(forProcessID: owner.processIdentifier) {
+            application.messagingTimeout = 0.05
+            if let menuBar: UIElement = try? application.attribute(.menuBar),
+               let frame = applicationMenuFrame(from: menuBar, displayBounds: displayBounds) {
+                return frame
+            }
+        }
+
         guard
-            let menuBar = try? systemWideElement.elementAtPosition(Float(displayBounds.origin.x), Float(displayBounds.origin.y)),
+            let menuBar = try? systemWideElement.elementAtPosition(Float(displayBounds.minX + 1), Float(displayBounds.minY + 12)),
             let role = try? menuBar.role(),
-            role == .menuBar,
-            let items: [UIElement] = try? menuBar.arrayAttribute(.children)?.filter({ (try? $0.attribute(.enabled)) == true })
+            role == .menuBar
         else {
             return nil
         }
+        return applicationMenuFrame(from: menuBar, displayBounds: displayBounds)
+    }
 
-        let itemFrames = items.lazy.compactMap { try? $0.attribute(.frame) as CGRect? }
-        let applicationMenuFrame = itemFrames.reduce(.null, CGRectUnion)
-
-        if applicationMenuFrame.width <= 0 {
-            return nil
+    private func applicationMenuFrame(from menuBar: UIElement, displayBounds: CGRect) -> CGRect? {
+        menuBar.messagingTimeout = 0.05
+        guard let items: [UIElement] = try? menuBar.arrayAttribute(.children), !items.isEmpty else { return nil }
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(200))
+        var frames = [CGRect]()
+        for item in items {
+            guard ContinuousClock.now < deadline else { return nil }
+            item.messagingTimeout = 0.05
+            // A partial result could omit File/Edit or the last menu title.
+            // Fail closed instead of shortening the protected menu region.
+            guard let frame: CGRect = try? item.attribute(.frame) else { return nil }
+            frames.append(frame)
         }
-
-        // The Accessibility API returns the menu bar for the active screen, regardless of the
-        // display origin used. This workaround prevents an incorrect frame from being returned
-        // for inactive displays in multi-display setups where one display has a notch.
-        if
-            let mainScreen = NSScreen.main,
-            let thisScreen = NSScreen.screens.first(where: { $0.displayID == displayID }),
-            thisScreen != mainScreen,
-            let notchedScreen = NSScreen.screens.first(where: { $0.hasNotch }),
-            let leftArea = notchedScreen.auxiliaryTopLeftArea,
-            applicationMenuFrame.width >= leftArea.maxX
-        {
-            return nil
-        }
-
-        return applicationMenuFrame
+        return ApplicationMenuGeometry.frame(itemFrames: frames, displayBounds: displayBounds)
     }
 
     /// Reveals every menu bar item that Ice is currently hiding.
