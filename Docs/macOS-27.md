@@ -59,6 +59,11 @@ Show All or quitting restores access. Third-party icons from one application
 cannot be hidden independently. Previews use the owning application icon, not a live image of a concealed
 status item.
 
+The visibility assertion also prevents the system Clock from opening Notification
+Center. Ice releases that assertion for a Clock click and restores the saved
+hidden layout when Notification Center closes. Hidden icons may briefly appear
+while the panel is open.
+
 Hidden descriptors stay in Ice's cache while their owner is running, because
 native hiding can remove them from AX enumeration or leave stale source-app
 proxies. Concealed owners are explicitly excluded from coordinate clicks and

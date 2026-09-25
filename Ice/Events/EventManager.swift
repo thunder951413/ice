@@ -18,6 +18,10 @@ final class EventManager {
     /// The single pending delayed show-on-hover evaluation.
     private var showOnHoverTask: Task<Void, Never>?
 
+    /// A native Clock click needs a short assertion-free interval on macOS 27.
+    private var clockMouseDownFrame: CGRect?
+    private var clockActivationTask: Task<Void, Never>?
+
     // MARK: Monitors
 
     /// Monitor for mouse down events.
@@ -29,6 +33,7 @@ final class EventManager {
         }
         switch event.type {
         case .leftMouseDown:
+            handleClockMouseDown(with: event)
             handleShowOnClick(with: event)
             handleSmartRehide(with: event)
         case .rightMouseDown:
@@ -44,7 +49,7 @@ final class EventManager {
     private(set) lazy var mouseUpMonitor = UniversalEventMonitor(
         mask: .leftMouseUp
     ) { [weak self] event in
-        self?.handleLeftMouseUp()
+        self?.handleLeftMouseUp(with: event)
         return event
     }
 
@@ -322,11 +327,101 @@ extension EventManager {
 
     // MARK: Handle Left Mouse Up
 
-    private func handleLeftMouseUp() {
+    private func handleLeftMouseUp(with event: NSEvent) {
+        handleClockMouseUp(with: event)
         guard let appearanceManager = appState?.appearanceManager else {
             return
         }
         appearanceManager.setIsDraggingMenuBarItem(false)
+    }
+
+    // MARK: Handle System Clock
+
+    private func handleClockMouseDown(with event: NSEvent) {
+        clockMouseDownFrame = nil
+        guard let appState,
+              appState.menuBarManager.hostedItemVisibilityManager.needsClockActivationBridge,
+              clockActivationTask == nil,
+              let location = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics
+        else { return }
+        clockMouseDownFrame = HostedMenuBarBackend.systemClockFrame(at: location)
+    }
+
+    private func handleClockMouseUp(with event: NSEvent) {
+        guard let frame = clockMouseDownFrame else { return }
+        clockMouseDownFrame = nil
+        guard let appState,
+              let location = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics,
+              frame.insetBy(dx: -4, dy: -4).contains(location),
+              let screen = NSScreen.screens.first(where: { CGDisplayBounds($0.displayID).contains(location) })
+        else { return }
+
+        let visibility = appState.menuBarManager.hostedItemVisibilityManager
+        clockActivationTask = Task { @MainActor [weak self] in
+            defer { self?.clockActivationTask = nil }
+            // Let the native click finish first. This also avoids toggling an
+            // already-open panel if a later macOS release fixes this behavior.
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, !Self.isNotificationCenterOpen(),
+                  visibility.beginClockActivationBridge()
+            else { return }
+            defer { visibility.endClockActivationBridge() }
+
+            // MenuBarAgent needs one display transaction after the assertion
+            // is invalidated before a replacement AX press can open the panel.
+            try? await Task.sleep(for: .milliseconds(150))
+
+            var didPress = false
+            for _ in 0..<10 {
+                guard !Task.isCancelled else { return }
+                if HostedMenuBarBackend.pressSystemClock(on: screen.displayID) {
+                    didPress = true
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard didPress else { return }
+
+            // Reapplying the assertion closes Notification Center. Restore it
+            // after the panel disappears, with a bounded timeout for recovery.
+            var appeared = false
+            var closedSamples = 0
+            for _ in 0..<300 {
+                guard !Task.isCancelled else { return }
+                if Self.isNotificationCenterOpen() {
+                    appeared = true
+                    closedSamples = 0
+                } else if appeared {
+                    closedSamples += 1
+                    if closedSamples >= 3 { return }
+                } else if closedSamples >= 20 {
+                    return
+                } else {
+                    closedSamples += 1
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    private static func isNotificationCenterOpen() -> Bool {
+        let pids = Set(NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.apple.notificationcenterui"
+        ).map(\.processIdentifier))
+        guard !pids.isEmpty else { return false }
+        return WindowInfo.getOnScreenWindows().contains { window in
+            guard pids.contains(window.ownerPID) else { return false }
+            if window.title == "Notification Center" { return true }
+            // Window titles can be redacted without Screen Recording access.
+            // The panel itself covers a display, unlike notification banners.
+            return NSScreen.screens.contains { screen in
+                let bounds = CGDisplayBounds(screen.displayID)
+                return abs(window.frame.minX - bounds.minX) < 2 &&
+                    abs(window.frame.minY - bounds.minY) < 2 &&
+                    window.frame.width >= bounds.width * 0.8 &&
+                    window.frame.height >= bounds.height * 0.8
+            }
+        }
     }
 
     // MARK: Handle Left Mouse Dragged

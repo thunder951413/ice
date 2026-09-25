@@ -47,6 +47,7 @@ final class HostedItemVisibilityManager: ObservableObject {
     private var revealWaiters = [UUID: RevealWaiter]()
     private var permissionWasAvailable = true
     private var isStopped = false
+    private var isClockActivationInProgress = false
     private let logger = Logger(category: "HostedItemVisibility")
 
     init(appState: AppState) {
@@ -120,6 +121,9 @@ final class HostedItemVisibilityManager: ObservableObject {
 
     func refreshNow() {
         guard Self.isSupported, !isStopped, let appState else { return }
+        // A held assertion suppresses Notification Center even though Clock
+        // itself remains visible. Keep it released until that panel closes.
+        guard !isClockActivationInProgress else { return }
         guard checkAccessibility() else { return }
         guard !appState.menuBarManager.isHidingPaused else {
             if assertion.isActive || assertion.isActivating { releaseRestriction() }
@@ -321,6 +325,7 @@ final class HostedItemVisibilityManager: ObservableObject {
 
     func restoreAll(stop: Bool = false) {
         isStopped = stop
+        isClockActivationInProgress = false
         refreshTask?.cancel()
         refreshTask = nil
         cancelActivationRetry()
@@ -332,6 +337,23 @@ final class HostedItemVisibilityManager: ObservableObject {
         lastFailed = nil
         failureDescription = nil
         releaseRestriction()
+    }
+
+    var needsClockActivationBridge: Bool {
+        Self.isSupported && !isStopped && !isClockActivationInProgress && assertion.isActive
+    }
+
+    func beginClockActivationBridge() -> Bool {
+        guard needsClockActivationBridge else { return false }
+        isClockActivationInProgress = true
+        releaseRestriction()
+        return true
+    }
+
+    func endClockActivationBridge() {
+        guard isClockActivationInProgress else { return }
+        isClockActivationInProgress = false
+        refreshNow()
     }
 
     private func recordActivationFailure(

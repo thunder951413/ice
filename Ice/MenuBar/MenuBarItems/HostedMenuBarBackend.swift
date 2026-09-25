@@ -567,6 +567,23 @@ enum HostedMenuBarBackend {
         renderedItems().filter { sourcePID == nil || $0.pid == sourcePID }.map(\.frame)
     }
 
+    /// The system Clock stays visible under the macOS 27 visibility assertion,
+    /// but its native click cannot open Notification Center while it is held.
+    static func systemClockFrame(at point: CGPoint) -> CGRect? {
+        renderedItems().first {
+            $0.identityStrings.contains("com.apple.menuextra.clock") && $0.frame.contains(point)
+        }?.frame
+    }
+
+    static func pressSystemClock(on displayID: CGDirectDisplayID) -> Bool {
+        let displayBounds = CGDisplayBounds(displayID)
+        guard let clock = renderedItems(forceRefresh: true).first(where: {
+            $0.identityStrings.contains("com.apple.menuextra.clock") &&
+                displayBounds.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY))
+        }) else { return false }
+        return AXUIElementPerformAction(clock.element, kAXPressAction as CFString) == .success
+    }
+
     static func renderedElement(for item: HostedMenuBarItemHandle) -> AXUIElement? {
         // A click must reacquire after any reflow rather than trusting a hover
         // snapshot. Ordinary layout reads share the short-lived snapshot below.
