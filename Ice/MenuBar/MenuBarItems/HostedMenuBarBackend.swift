@@ -394,7 +394,7 @@ enum HostedMenuBarBackend {
                     scannedPIDs: result.scannedPIDs,
                     concealedBundles: concealedBundleIdentifiers
                 ))
-            } else if let newerSnapshot = pendingEnumerationSnapshot {
+            } else if restarts < maxEnumerationRestarts, let newerSnapshot = pendingEnumerationSnapshot {
                 // A launch/quit/display event arrived while AX was blocked. Do
                 // not publish its old result; immediately coalesce waiters onto
                 // one replacement scan using the newer main-thread snapshot.

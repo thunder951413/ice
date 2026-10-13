@@ -853,6 +853,10 @@ extension MenuBarItemManager {
         )
         var currentItem = matchingItem(for: item, in: currentItems)
         var didRevealSections = false
+        // Declared before the sleep below so a cancellation cannot leak the lease.
+        defer {
+            if didRevealSections { endSectionReveal() }
+        }
 
         // A cached hidden source may not currently exist in AX. Collapse the
         // spacer controls to reacquire it, then restore their previous states.
@@ -866,9 +870,6 @@ extension MenuBarItemManager {
                 forceRefresh: true
             )
             currentItem = matchingItem(for: item, in: currentItems)
-        }
-        defer {
-            if didRevealSections { endSectionReveal() }
         }
 
         // The source view already owns a valid AX handle and frame snapshot. If

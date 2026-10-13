@@ -235,6 +235,18 @@ final class MenuBarOverlayPanel: NSPanel {
             .store(in: &c)
 
         if let appState {
+            // The wallpaper is only captured for split/full shapes; capture as
+            // soon as one is selected rather than on the next 5s tick.
+            appState.appearanceManager.$configuration
+                .map(\.shapeKind)
+                .removeDuplicates()
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.insertUpdateFlag(.desktopWallpaper)
+                }
+                .store(in: &c)
+
             appState.menuBarManager.$isMenuBarHiddenBySystem
                 .sink { [weak self] isHidden in
                     self?.alphaValue = isHidden ? 0 : 1

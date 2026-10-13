@@ -423,6 +423,12 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     private func releaseRestriction() {
+        // An activation may have concealed items natively before its completion
+        // was superseded, leaving the backend's concealed set unchanged. The
+        // set-based invalidation would then be skipped, so invalidate here.
+        if assertion.isActive || assertion.isActivating {
+            HostedMenuBarBackend.invalidateEnumerationCache()
+        }
         generation += 1
         ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
         assertion.invalidateAll()

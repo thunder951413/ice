@@ -423,12 +423,16 @@ extension NSScreen {
     /// The screen containing the mouse pointer.
     static var screenWithMouse: NSScreen? {
         let location = NSEvent.mouseLocation
+        if let screen = screens.first(where: { $0.frame.contains(location) }) {
+            return screen
+        }
         // `CGRect.contains` excludes the max edges, and the pointer rests on the
-        // top edge (y == maxY) when pushed into the menu bar.
+        // top edge (y == maxY) when pushed into a menu bar. Only fall back to
+        // the inclusive edge when no screen strictly contains the point, so a
+        // display stacked above another keeps its own bottom row.
         return screens.first { screen in
             let frame = screen.frame
-            return location.x >= frame.minX && location.x < frame.maxX &&
-                location.y >= frame.minY && location.y <= frame.maxY
+            return location.x >= frame.minX && location.x < frame.maxX && location.y == frame.maxY
         }
     }
 
