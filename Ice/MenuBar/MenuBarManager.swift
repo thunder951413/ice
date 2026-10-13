@@ -297,8 +297,45 @@ final class MenuBarManager: ObservableObject {
         }
     }
 
+    private struct ApplicationMenuFrameKey: Hashable {
+        let ownerPID: pid_t
+        let displayID: CGDirectDisplayID
+    }
+
+    /// Short-lived cache of application menu frames. Reading the frame is a
+    /// synchronous cross-process AX walk (up to ~200ms) and hover, click and
+    /// overlay paths may ask for it on every mouse event. Keyed by the menu
+    /// bar owner, so switching apps naturally misses.
+    private var applicationMenuFrameCache = [ApplicationMenuFrameKey: (date: ContinuousClock.Instant, frame: CGRect?)]()
+
+    /// Default freshness for ``getApplicationMenuFrame(for:maxAge:)``.
+    nonisolated static let applicationMenuFrameCacheLifetime: Duration = .milliseconds(500)
+
     /// Returns the frame of the application menu for the given display.
-    func getApplicationMenuFrame(for displayID: CGDirectDisplayID) -> CGRect? {
+    ///
+    /// - Parameter maxAge: How old a cached answer may be. Pass `.zero` when the
+    ///   caller is specifically waiting for the menu to change.
+    func getApplicationMenuFrame(
+        for displayID: CGDirectDisplayID,
+        maxAge: Duration = MenuBarManager.applicationMenuFrameCacheLifetime
+    ) -> CGRect? {
+        let key = ApplicationMenuFrameKey(
+            ownerPID: NSWorkspace.shared.menuBarOwningApplication?.processIdentifier ?? 0,
+            displayID: displayID
+        )
+        let now = ContinuousClock.now
+        if maxAge > .zero, let cached = applicationMenuFrameCache[key], cached.date.duration(to: now) < maxAge {
+            return cached.frame
+        }
+        let frame = readApplicationMenuFrame(for: displayID)
+        if applicationMenuFrameCache.count > 16 {
+            applicationMenuFrameCache.removeAll()
+        }
+        applicationMenuFrameCache[key] = (now, frame)
+        return frame
+    }
+
+    private func readApplicationMenuFrame(for displayID: CGDirectDisplayID) -> CGRect? {
         let displayBounds = CGDisplayBounds(displayID)
 
         // On hosted menu bars, hit-testing the exact display corner can return

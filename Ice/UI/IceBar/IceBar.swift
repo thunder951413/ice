@@ -414,8 +414,9 @@ private struct IceBarItemView: View {
     }
 
     private var image: NSImage? {
-        if usesHostedAppIcon, let icon = item.owningApplication?.icon?.copy() as? NSImage {
-            icon.size = CGSize(width: iconSide, height: iconSide)
+        if usesHostedAppIcon, let icon = item.owningApplication?.icon {
+            // `.resizable().frame` below does the sizing; copying and resizing
+            // the NSImage on every body evaluation is wasted work.
             return icon
         }
 
@@ -445,9 +446,10 @@ private struct IceBarItemView: View {
                         .resizable().scaledToFit()
                         .frame(width: iconSide, height: iconSide)
                 } else {
+                    let size = scaledImageSize(image)
                     Image(nsImage: image)
                         .resizable().scaledToFit()
-                        .frame(width: scaledImageSize(image).width, height: scaledImageSize(image).height)
+                        .frame(width: size.width, height: size.height)
                 }
             } else {
                 Text(item.displayName)

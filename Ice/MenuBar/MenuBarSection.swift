@@ -279,25 +279,19 @@ final class MenuBarSection {
         }
 
         rehideMonitor = UniversalEventMonitor(mask: .mouseMoved) { [weak self] event in
-            guard
-                let self,
-                let screen = NSScreen.main
-            else {
+            guard let self else {
                 return event
             }
-            if NSEvent.mouseLocation.y < screen.visibleFrame.maxY {
+            if !Self.isMouseInsideMenuBar {
                 if rehideTimer == nil {
                     rehideTimer = .scheduledTimer(
                         withTimeInterval: appState.settingsManager.generalSettingsManager.rehideInterval,
                         repeats: false
                     ) { [weak self] _ in
-                        guard
-                            let self,
-                            let screen = NSScreen.main
-                        else {
+                        guard let self else {
                             return
                         }
-                        if NSEvent.mouseLocation.y < screen.visibleFrame.maxY {
+                        if !Self.isMouseInsideMenuBar {
                             Task {
                                 await self.hide()
                             }
@@ -316,6 +310,12 @@ final class MenuBarSection {
         }
 
         rehideMonitor?.start()
+    }
+
+    /// Whether the pointer is in the menu bar of the screen it is on.
+    nonisolated private static var isMouseInsideMenuBar: Bool {
+        guard let screen = NSScreen.screenWithMouse ?? NSScreen.main else { return false }
+        return screen.menuBarContains(NSEvent.mouseLocation)
     }
 
     /// Stops running checks to determine when to rehide the section.

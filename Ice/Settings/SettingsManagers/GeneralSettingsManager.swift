@@ -195,9 +195,20 @@ final class GeneralSettingsManager: ObservableObject {
             .store(in: &c)
 
         $useIceBar
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] useIceBar in
+            .sink { useIceBar in
                 Defaults.set(useIceBar, forKey: .useIceBar)
+            }
+            .store(in: &c)
+
+        // Only an actual change of mode needs to collapse the sections and
+        // reclassify items; the value loaded at launch is not a change.
+        $useIceBar
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
                 guard let appState = self?.appState else {
                     return
                 }

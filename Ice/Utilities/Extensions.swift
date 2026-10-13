@@ -422,7 +422,32 @@ extension NSImage {
 extension NSScreen {
     /// The screen containing the mouse pointer.
     static var screenWithMouse: NSScreen? {
-        screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+        let location = NSEvent.mouseLocation
+        // `CGRect.contains` excludes the max edges, and the pointer rests on the
+        // top edge (y == maxY) when pushed into the menu bar.
+        return screens.first { screen in
+            let frame = screen.frame
+            return location.x >= frame.minX && location.x < frame.maxX &&
+                location.y >= frame.minY && location.y <= frame.maxY
+        }
+    }
+
+    /// The lowest y-coordinate (AppKit space) of this screen's menu bar.
+    ///
+    /// `visibleFrame` excludes the menu bar only while it is shown. With an
+    /// auto-hiding menu bar, fall back to the menu bar thickness (or the
+    /// notch inset, whichever is taller).
+    var menuBarMinY: CGFloat {
+        if visibleFrame.maxY < frame.maxY {
+            return visibleFrame.maxY
+        }
+        return frame.maxY - max(NSStatusBar.system.thickness, safeAreaInsets.top)
+    }
+
+    /// Whether an AppKit point lies within this screen's menu bar strip.
+    func menuBarContains(_ point: CGPoint) -> Bool {
+        point.x >= frame.minX && point.x < frame.maxX &&
+            point.y >= menuBarMinY && point.y <= frame.maxY
     }
 
     /// The display identifier of the screen.

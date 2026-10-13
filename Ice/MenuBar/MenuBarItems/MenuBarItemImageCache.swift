@@ -279,12 +279,19 @@ final class MenuBarItemImageCache: ObservableObject {
             newImages.merge(sectionImages) { (_, new) in new }
         }
 
+        let menuBarHeight = screen.getMenuBarHeight()
+        let displayID = screen.displayID
         await MainActor.run { [newImages] in
-            images.merge(newImages) { (_, new) in new }
+            // Drop images of items that no longer exist (quit apps, removed
+            // icons) so the cache does not grow for the life of the process.
+            let liveIDs = Set(appState.itemManager.itemCache.allItems.map(\.stableID))
+            var updated = images.filter { liveIDs.contains($0.key) }
+            updated.merge(newImages) { (_, new) in new }
+            images = updated
+            // Written on the main actor, where they are read.
+            self.screen = NSScreen.screens.first { $0.displayID == displayID }
+            self.menuBarHeight = menuBarHeight
         }
-
-        self.screen = screen
-        self.menuBarHeight = screen.getMenuBarHeight()
     }
 
     /// Updates the cache for the given sections, if necessary.

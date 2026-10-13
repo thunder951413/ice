@@ -66,12 +66,11 @@ final class MenuBarAppearanceManager: ObservableObject {
                 guard let self else {
                     return
                 }
+                // Rebuild one panel per current screen.
                 while let panel = overlayPanels.popFirst() {
-                    panel.orderOut(self)
+                    panel.close()
                 }
-                if Set(overlayPanels.map { $0.owningScreen }) != Set(NSScreen.screens) {
-                    configureOverlayPanels(with: configuration)
-                }
+                configureOverlayPanels(with: configuration)
             }
             .store(in: &c)
 
@@ -93,9 +92,9 @@ final class MenuBarAppearanceManager: ObservableObject {
                 guard let self else {
                     return
                 }
-                // The overlay panels may not have been configured yet. Since some of the
-                // properties on the manager might call for them, try to configure now.
-                if overlayPanels.isEmpty {
+                // Create the panels when an effect is first enabled, and tear them
+                // down (with their timers) once every effect is turned off.
+                if overlayPanels.isEmpty || !needsOverlayPanels(for: configuration) {
                     configureOverlayPanels(with: configuration)
                 }
             }

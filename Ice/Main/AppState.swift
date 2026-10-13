@@ -112,7 +112,12 @@ final class AppState: ObservableObject {
             guard let self else {
                 return
             }
-            isActiveSpaceFullscreen = Bridging.isSpaceFullscreen(Bridging.activeSpaceID)
+            // Runs after every left click; assigning an unchanged @Published
+            // value would still invalidate every view observing AppState.
+            let isFullscreen = Bridging.isSpaceFullscreen(Bridging.activeSpaceID)
+            if isActiveSpaceFullscreen != isFullscreen {
+                isActiveSpaceFullscreen = isFullscreen
+            }
         }
         .store(in: &c)
 

@@ -32,6 +32,17 @@ final class AsyncSnapshotCache<Value>: @unchecked Sendable {
         }
     }
 
+    /// The last loaded value even if it is past `lifetime`, up to `maxAge`.
+    /// For passive readers (layout, paint) that would rather show slightly
+    /// old geometry than treat "not refreshed recently" as "absent".
+    /// Invalidation still clears it, so a known layout change is never masked.
+    func lastValue(maxAge: TimeInterval, at date: Date = .now) -> Value? {
+        lock.withLock {
+            guard let entry, date.timeIntervalSince(entry.date) < maxAge else { return nil }
+            return entry.value
+        }
+    }
+
     func invalidate() {
         lock.withLock {
             generation += 1

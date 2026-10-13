@@ -123,6 +123,12 @@ final class MenuBarItemManager: ObservableObject {
     /// Prevents timer-driven cache refreshes during the hosted warmup.
     private var isWarmingHostedCache = false
 
+    /// Number of in-flight operations that need every section shown.
+    private var sectionRevealLeases = 0
+
+    /// Control states captured by the first reveal lease, restored by the last.
+    private var sectionStatesBeforeReveal = [(ControlItem, ControlItem.HidingState)]()
+
     /// Context values for the current temporarily shown items.
     private var tempShownItemContexts = [TempShownItemContext]()
 
@@ -223,14 +229,17 @@ final class MenuBarItemManager: ObservableObject {
         // that finishes a settings click or an NSDraggingSession on macOS 27.
         let mouseEvents: AnyPublisher<NSEvent, Never>
         if HostedItemVisibilityManager.isSupported {
-            mouseEvents = UniversalEventMonitor.publisher(for: mouseTrackingMask).eraseToAnyPublisher()
+            // Mouse-move timing only gates the synthetic drag paths, which are
+            // not used on hosted menu bars. Do not wake for every pointer move.
+            mouseEvents = UniversalEventMonitor.publisher(for: mouseTrackingMask.subtracting(.mouseMoved))
+                .eraseToAnyPublisher()
         } else {
             mouseEvents = Publishers.Merge(
                 UniversalEventMonitor.publisher(for: mouseTrackingMask),
                 RunLoopLocalEventMonitor.publisher(for: mouseTrackingMask, mode: .eventTracking)
             ).eraseToAnyPublisher()
         }
-        mouseEvents.removeDuplicates()
+        mouseEvents
             .sink { [weak self] event in
                 guard let self else {
                     return
@@ -322,8 +331,8 @@ extension MenuBarItemManager {
                 let assigned = hostedSectionAssignments[item.stableID]
             {
                 // Logical assignments are authoritative for hosted items: an
-                // item Ice is hiding stays on screen underneath its mask, so
-                // geometry cannot determine its section.
+                // item Ice is hiding may be absent from AX or keep a stale
+                // frame, so geometry cannot determine its section.
                 cache[assigned].append(item)
             } else if item.hostedHandle != nil, !item.isOnScreen {
                 let section = hostedSectionAssignments[item.stableID] ?? .hidden
@@ -419,7 +428,7 @@ extension MenuBarItemManager {
             return
         }
 
-        var restoreControlStates: [(ControlItem, ControlItem.HidingState)]?
+        var didRevealSections = false
         var items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
         if
             !hasWarmedHostedCache,
@@ -428,17 +437,14 @@ extension MenuBarItemManager {
         {
             hasWarmedHostedCache = true
             isWarmingHostedCache = true
-            let controls = appState.menuBarManager.sections.map(\.controlItem)
-            restoreControlStates = controls.map { ($0, $0.state) }
-            controls.forEach { $0.state = .showItems }
+            beginSectionReveal(appState)
+            didRevealSections = true
             try? await Task.sleep(for: .milliseconds(150))
             items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
             isWarmingHostedCache = false
         }
         defer {
-            restoreControlStates?.forEach { control, state in
-                control.state = state
-            }
+            if didRevealSections { endSectionReveal() }
         }
         guard !items.isEmpty else {
             logSkippingCache(reason: AXIsProcessTrusted() ? "no menu bar items were discovered" : "Accessibility permission is unavailable")
@@ -457,31 +463,6 @@ extension MenuBarItemManager {
         let alwaysHiddenControlItem = removeControlItem(for: .alwaysHidden, from: &items)
 
         guard let hiddenControlItem else {
-            if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
-                var cache = ItemCache()
-                let hostedItems = items.filter {
-                    $0.hostedHandle != nil
-                        && $0.ownerPID != ProcessInfo.processInfo.processIdentifier
-                }
-                for item in hostedItems {
-                    hostedItemSnapshots[item.stableID] = item
-                    if hostedSectionAssignments[item.stableID] == nil {
-                        hostedSectionAssignments[item.stableID] = item.isOnScreen ? .visible : .hidden
-                    }
-                    let section = hostedSectionAssignments[item.stableID]
-                        ?? (item.isOnScreen ? .visible : .hidden)
-                    cache[section].append(item)
-                }
-                hostedItemSnapshots = hostedItemSnapshots.filter { _, item in
-                    item.owningApplication != nil
-                }
-                for section in MenuBarSection.Name.allCases {
-                    cache[section] = cache[section].sortedByOrderInMenuBar()
-                }
-                itemCache = cache
-                cachedItemSignatures = itemSignatures
-                return
-            }
             Logger.itemManager.warning("Missing control item for hidden section")
             Logger.itemManager.debug("Clearing menu bar item cache")
             itemCache.clear()
@@ -593,8 +574,9 @@ extension MenuBarItemManager {
 
     /// Restores logical section assignments recorded by previous sessions.
     ///
-    /// Hosted items that Ice is hiding stay on screen underneath their masks,
-    /// so visibility alone cannot reconstruct the assignment after a relaunch.
+    /// Hosted items that Ice is hiding are removed from the menu bar by the
+    /// system, so visibility alone cannot reconstruct the assignment after a
+    /// relaunch.
     private func loadPersistedHostedSectionAssignments() {
         guard let stored = Defaults.dictionary(forKey: .hostedSectionAssignments) as? [String: String] else {
             return
@@ -1504,14 +1486,13 @@ extension MenuBarItemManager {
             forceRefresh: true
         )
         var currentItem = matchingItem(for: item, in: currentItems)
-        var restoreStates: [(ControlItem, ControlItem.HidingState)]?
+        var didRevealSections = false
 
         // A cached hidden source may not currently exist in AX. Collapse the
         // spacer controls to reacquire it, then restore their previous states.
         if currentItem == nil {
-            let controls = appState.menuBarManager.sections.map(\.controlItem)
-            restoreStates = controls.map { ($0, $0.state) }
-            controls.forEach { $0.state = .showItems }
+            beginSectionReveal(appState)
+            didRevealSections = true
             try await Task.sleep(for: .milliseconds(120))
             currentItems = MenuBarItem.getMenuBarItems(
                 onScreenOnly: false,
@@ -1521,7 +1502,7 @@ extension MenuBarItemManager {
             currentItem = matchingItem(for: item, in: currentItems)
         }
         defer {
-            restoreStates?.forEach { control, state in control.state = state }
+            if didRevealSections { endSectionReveal() }
         }
 
         // The source view already owns a valid AX handle and frame snapshot. If
@@ -2043,6 +2024,26 @@ extension MenuBarItemManager {
         }
     }
 
+    /// Shows every section for the duration of a lease. Overlapping callers
+    /// share one capture of the original states, so a second reveal can never
+    /// record "shown" as the state to return to.
+    private func beginSectionReveal(_ appState: AppState) {
+        let controls = appState.menuBarManager.sections.map(\.controlItem)
+        if sectionRevealLeases == 0 {
+            sectionStatesBeforeReveal = controls.map { ($0, $0.state) }
+        }
+        sectionRevealLeases += 1
+        controls.forEach { $0.state = .showItems }
+    }
+
+    private func endSectionReveal() {
+        guard sectionRevealLeases > 0 else { return }
+        sectionRevealLeases -= 1
+        guard sectionRevealLeases == 0 else { return }
+        sectionStatesBeforeReveal.forEach { control, state in control.state = state }
+        sectionStatesBeforeReveal.removeAll()
+    }
+
     /// Hosted hidden items can disappear from AX. Reveal their owning section
     /// long enough to reacquire the element and perform the requested click.
     private func revealAndClickHostedItem(
@@ -2053,9 +2054,8 @@ extension MenuBarItemManager {
         guard let appState else {
             return
         }
-        let controls = appState.menuBarManager.sections.map(\.controlItem)
-        let originalStates = controls.map { ($0, $0.state) }
-        controls.forEach { $0.state = .showItems }
+        beginSectionReveal(appState)
+        defer { endSectionReveal() }
         try? await Task.sleep(for: .milliseconds(150))
 
         let items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
@@ -2065,7 +2065,6 @@ extension MenuBarItemManager {
             }
         guard let latest else {
             Logger.itemManager.error("Could not reacquire hosted \(item.logString) after revealing sections")
-            originalStates.forEach { control, state in control.state = state }
             return
         }
 
@@ -2079,7 +2078,6 @@ extension MenuBarItemManager {
 
         let interval = max(1, appState.settingsManager.advancedSettingsManager.tempShowInterval)
         try? await Task.sleep(for: .seconds(interval))
-        originalStates.forEach { control, state in control.state = state }
         cachedItemSignatures.removeAll()
     }
 

@@ -18,10 +18,17 @@ final class HostedItemVisibilityManager: ObservableObject {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
 
+    /// System-owned item categories (Clock, Control Center, etc.) passed to the
+    /// MenuBarClientCore assertion as always allowed. The values mirror the
+    /// private enumeration used by Thaw's macOS 27 patch; if a future release
+    /// adds categories, items in them would be concealed, so keep this list in
+    /// one place and revisit it on each major macOS update.
+    private static let allowedSystemItemKinds: [NSNumber] = (0...8).map { NSNumber(value: $0) }
+
     private weak var appState: AppState?
     private lazy var assertion = VisibilityAssertionSession<UnsafeMutableRawPointer>(
         activate: { configuration, completion in
-            IceMenuBarVisibilityActivate(configuration.allowed.sorted(), (0...8).map { NSNumber(value: $0) }) { error in
+            IceMenuBarVisibilityActivate(configuration.allowed.sorted(), Self.allowedSystemItemKinds) { error in
                 MainActor.assumeIsolated { completion(error) }
             }
         },

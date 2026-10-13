@@ -20,11 +20,14 @@ enum AsyncSnapshotCacheTests {
         expect(cache.value() == 42, "a complete result must become readable")
         try await Task.sleep(for: .milliseconds(30))
         expect(cache.value() == nil, "expired occupancy cannot authorize an empty-space click")
+        expect(cache.lastValue(maxAge: 5) == 42, "passive layout reads may use an expired but uninvalidated snapshot")
+        expect(cache.lastValue(maxAge: 0.01) == nil, "a stale read is still bounded by its maximum age")
 
         let obsolete = Task { await cache.refresh(force: true, load: loader) }
         while loads < 2 { await Task.yield() }
         cache.invalidate()
         expect(cache.value() == nil, "invalidation must immediately discard obsolete geometry")
+        expect(cache.lastValue(maxAge: 60) == nil, "invalidation must also discard the stale fallback")
         let obsoleteValue = await obsolete.value
         expect(obsoleteValue == 42 && loads == 3, "a waiting activation must retry an invalidated scan before publishing fresh geometry")
         let recovered = await cache.refresh(force: true, load: loader)

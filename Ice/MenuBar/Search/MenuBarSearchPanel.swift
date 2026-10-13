@@ -426,12 +426,30 @@ private struct ShowItemButton: View {
     }
 }
 
-private let controlCenterIcon: NSImage? = {
-    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.controlcenter").first else {
+/// Looked up on use: a one-time global would stay nil forever if Control
+/// Center was not running the first time a row was rendered.
+private var controlCenterIcon: NSImage? {
+    NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.controlcenter").first?.icon
+}
+
+/// Trimming scans every pixel; rows are re-evaluated on each image cache
+/// publish, so remember the trimmed result per captured image.
+private let trimmedImageCache: NSCache<CGImage, CGImage> = {
+    let cache = NSCache<CGImage, CGImage>()
+    cache.countLimit = 256
+    return cache
+}()
+
+private func trimmedHorizontally(_ image: CGImage) -> CGImage? {
+    if let cached = trimmedImageCache.object(forKey: image) {
+        return cached
+    }
+    guard let trimmed = image.trimmingTransparentPixels(around: [.minXEdge, .maxXEdge]) else {
         return nil
     }
-    return app.icon
-}()
+    trimmedImageCache.setObject(trimmed, forKey: image)
+    return trimmed
+}
 
 private struct MenuBarSearchItemView: View {
     @EnvironmentObject var imageCache: MenuBarItemImageCache
@@ -440,7 +458,7 @@ private struct MenuBarSearchItemView: View {
 
     private var image: NSImage? {
         guard
-            let image = imageCache.images[item.stableID]?.trimmingTransparentPixels(around: [.minXEdge, .maxXEdge]),
+            let image = imageCache.images[item.stableID].flatMap(trimmedHorizontally),
             let screen = imageCache.screen
         else {
             return nil

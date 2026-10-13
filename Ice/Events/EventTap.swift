@@ -251,7 +251,9 @@ private func handleEvent(
     refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
     guard let refcon else {
-        return Unmanaged.passRetained(event)
+        // Passing the event through unchanged: the tap does not own a +1
+        // reference to it, so returning a retained reference would leak.
+        return Unmanaged.passUnretained(event)
     }
     let eventTap = Unmanaged<EventTap>.fromOpaque(refcon).takeUnretainedValue()
     return EventTap.performCallback(for: eventTap, proxy: proxy, type: type, event: event)

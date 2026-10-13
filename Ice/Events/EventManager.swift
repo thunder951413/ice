@@ -22,6 +22,8 @@ final class EventManager {
     private var clockMouseDownPoint: CGPoint?
     private var clockActivationTask: Task<Void, Never>?
 
+    private var menuBarWindowFrameCache: (displayID: CGDirectDisplayID, date: ContinuousClock.Instant, frame: CGRect?)?
+
     // MARK: Monitors
 
     /// Monitor for mouse down events.
@@ -95,6 +97,15 @@ final class EventManager {
         self.appState = appState
     }
 
+    /// Whether the monitors are meant to be running (``startAll()`` was
+    /// called more recently than ``stopAll()``).
+    private var isRunning = false
+
+    /// Monitors that only serve an optional feature. Global mouse-moved and
+    /// scroll monitors wake Ice for every pointer event system-wide, so they
+    /// only run while the feature using them is enabled.
+    private var optionalMonitorStates: (hover: Bool, scroll: Bool) = (false, false)
+
     /// Sets up the manager.
     func performSetup() {
         startAll()
@@ -106,6 +117,16 @@ final class EventManager {
         var c = Set<AnyCancellable>()
 
         if let appState {
+            let general = appState.settingsManager.generalSettingsManager
+            Publishers.CombineLatest(general.$showOnHover, general.$showOnScroll)
+                .removeDuplicates { $0 == $1 }
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] hover, scroll in
+                    self?.optionalMonitorStates = (hover, scroll)
+                    self?.updateOptionalMonitors()
+                }
+                .store(in: &c)
+
             if let hiddenSection = appState.menuBarManager.section(withName: .hidden) {
                 // In fullscreen mode, the menu bar slides down from the top on hover. Observe
                 // the frame of the hidden section's control item, which we know will always be
@@ -134,13 +155,31 @@ final class EventManager {
 
     /// Starts all monitors.
     func startAll() {
-        for monitor in allMonitors {
-            monitor.start()
+        isRunning = true
+        mouseDownMonitor.start()
+        mouseUpMonitor.start()
+        mouseDraggedMonitor.start()
+        updateOptionalMonitors()
+    }
+
+    private func updateOptionalMonitors() {
+        if isRunning && optionalMonitorStates.hover {
+            mouseMovedMonitor.start()
+        } else {
+            mouseMovedMonitor.stop()
+            showOnHoverTask?.cancel()
+            showOnHoverTask = nil
+        }
+        if isRunning && optionalMonitorStates.scroll {
+            scrollWheelMonitor.start()
+        } else {
+            scrollWheelMonitor.stop()
         }
     }
 
     /// Stops all monitors.
     func stopAll() {
+        isRunning = false
         clockActivationTask?.cancel()
         clockActivationTask = nil
         clockMouseDownPoint = nil
@@ -308,7 +347,8 @@ extension EventManager {
         let displayID = screen.displayID
         let bounds = CGDisplayBounds(displayID)
         let menuOwner = NSWorkspace.shared.menuBarOwningApplication?.processIdentifier
-        let menuFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID)
+        // A click is rare and decisive: never act on a cached menu layout.
+        let menuFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID, maxAge: .zero)
         guard ApplicationMenuGeometry.isEmptySpace(at: point, applicationMenuFrame: menuFrame) else { return false }
         if HostedItemVisibilityManager.isSupported {
             if HostedMenuBarBackend.renderedItemFrameSnapshot() == nil {
@@ -359,8 +399,13 @@ extension EventManager {
         } else if !isMouseInsideApplicationMenu {
             // We have a left or right click that is inside the menu bar, outside
             // a menu bar item, and outside the application menu, so it _must_ be
-            // inside an empty menu bar space.
-            appState.preventShowOnHover()
+            // inside an empty menu bar space. Only suppress hover when that click
+            // shows or keeps showing sections: the reset lives in `hide()`, which
+            // never runs if nothing was shown, and hover would stay disabled.
+            let anySectionVisible = appState.menuBarManager.sections.contains { !$0.isHidden }
+            if anySectionVisible || appState.settingsManager.generalSettingsManager.showOnClick {
+                appState.preventShowOnHover()
+            }
         }
     }
 
@@ -645,15 +690,29 @@ extension EventManager {
         if appState.menuBarManager.isMenuBarHiddenBySystem || appState.isActiveSpaceFullscreen {
             if
                 let mouseLocation = MouseCursor.locationCoreGraphics,
-                let menuBarWindow = WindowInfo.getMenuBarWindow(for: screen.displayID)
+                let menuBarFrame = menuBarWindowFrame(for: screen.displayID)
             {
-                return menuBarWindow.frame.contains(mouseLocation)
+                return menuBarFrame.contains(mouseLocation)
             }
         } else if let mouseLocation = MouseCursor.locationAppKit {
             return mouseLocation.x >= screen.frame.minX && mouseLocation.x < screen.frame.maxX &&
                 mouseLocation.y > screen.visibleFrame.maxY && mouseLocation.y <= screen.frame.maxY
         }
         return false
+    }
+
+    /// The system menu bar window frame, cached briefly. Copying the window
+    /// list for every mouse-moved event in fullscreen is needlessly expensive;
+    /// the window only moves when the menu bar slides in or out.
+    private func menuBarWindowFrame(for displayID: CGDirectDisplayID) -> CGRect? {
+        let now = ContinuousClock.now
+        if let cached = menuBarWindowFrameCache, cached.displayID == displayID,
+           cached.date.duration(to: now) < .milliseconds(100) {
+            return cached.frame
+        }
+        let frame = WindowInfo.getMenuBarWindow(for: displayID)?.frame
+        menuBarWindowFrameCache = (displayID, now, frame)
+        return frame
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
@@ -713,14 +772,15 @@ extension EventManager {
         guard isMouseInsideMenuBar, !isMouseInsideNotch,
               let appState, let screen = bestScreen,
               let point = MouseCursor.locationCoreGraphics else { return false }
+        let applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
         guard ApplicationMenuGeometry.isEmptySpace(
             at: point,
-            applicationMenuFrame: appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
+            applicationMenuFrame: applicationMenuFrame
         ) else { return false }
         if HostedItemVisibilityManager.isSupported {
             return ApplicationMenuGeometry.isEmptyHostedSpace(
                 at: point,
-                applicationMenuFrame: appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID),
+                applicationMenuFrame: applicationMenuFrame,
                 itemFrames: HostedMenuBarBackend.renderedItemFrameSnapshot(),
                 displayBounds: CGDisplayBounds(screen.displayID)
             )

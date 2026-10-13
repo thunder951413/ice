@@ -147,22 +147,21 @@ final class MenuBarOverlayPanel: NSPanel {
             }
             let displayID = owningScreen.displayID
             updateTaskContext.setTask(for: .applicationMenuFrame, timeout: .seconds(10)) {
-                var hasDoneInitialUpdate = false
+                // Each read is a synchronous AX walk on the main actor. The new
+                // app's menu usually appears within a few hundred milliseconds,
+                // so back off instead of re-reading every millisecond.
+                var delay = Duration.milliseconds(25)
                 while true {
                     try Task.checkCancellation()
-                    guard
-                        let latestFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID),
-                        latestFrame != self.applicationMenuFrame
-                    else {
-                        if hasDoneInitialUpdate {
-                            try await Task.sleep(for: .seconds(1))
-                        } else {
-                            try await Task.sleep(for: .milliseconds(1))
-                        }
-                        continue
+                    if let latestFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID, maxAge: .zero),
+                       latestFrame != self.applicationMenuFrame {
+                        self.insertUpdateFlag(.applicationMenuFrame)
+                        // Late menu changes are rare; poll slowly until the timeout.
+                        delay = .seconds(1)
+                    } else if delay < .seconds(1) {
+                        delay = min(delay * 2, .seconds(1))
                     }
-                    self.insertUpdateFlag(.applicationMenuFrame)
-                    hasDoneInitialUpdate = true
+                    try await Task.sleep(for: delay)
                 }
             }
             Task {
@@ -309,9 +308,19 @@ final class MenuBarOverlayPanel: NSPanel {
         if flags.contains(.applicationMenuFrame) {
             updateApplicationMenuFrame(for: display)
         }
+        // Only the split/full shapes paint the wallpaper. A tint-only
+        // appearance would otherwise screenshot every display every 5 seconds.
         if flags.contains(.desktopWallpaper) {
-            updateDesktopWallpaper(for: display, with: windows)
+            if needsDesktopWallpaper {
+                updateDesktopWallpaper(for: display, with: windows)
+            } else if desktopWallpaper != nil {
+                desktopWallpaper = nil
+            }
         }
+    }
+
+    private var needsDesktopWallpaper: Bool {
+        appState?.appearanceManager.configuration.shapeKind != MenuBarShapeKind.none
     }
 
     /// Shows the panel.
