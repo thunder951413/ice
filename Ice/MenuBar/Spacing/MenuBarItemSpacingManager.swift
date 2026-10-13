@@ -4,13 +4,12 @@
 //
 
 import Cocoa
-import Combine
 
 /// Manager for menu bar item spacing.
 @MainActor
 final class MenuBarItemSpacingManager {
     /// UserDefaults keys.
-    private enum Key: String {
+    private enum Key: String, CaseIterable {
         case spacing = "NSStatusItemSpacing"
         case padding = "NSStatusItemSelectionPadding"
 
@@ -28,44 +27,37 @@ final class MenuBarItemSpacingManager {
         let failedApps: [String]
 
         var errorDescription: String? {
-            "The following applications failed to quit and were not restarted:\n" + failedApps.joined(separator: "\n")
+            "The following applications could not be restarted:\n" + failedApps.sorted().joined(separator: "\n")
         }
 
         var recoverySuggestion: String? {
-            "You may need to log out for the changes to take effect."
+            "Applications that did not quit were left running. Finish saving, then quit and reopen them manually."
         }
     }
-
-    /// Delay before force terminating an app.
-    private let forceTerminateDelay = 1
 
     /// The offset to apply to the default spacing and padding.
     /// Does not take effect until ``applyOffset()`` is called.
     var offset = 0
 
-    /// Runs a command with the given arguments.
-    private func runCommand(_ command: String, with arguments: [String]) async throws {
-        let process = Process()
-
-        process.executableURL = URL(filePath: "/usr/bin/env")
-        process.arguments = CollectionOfOne(command) + arguments
-
-        let task = Task.detached {
-            try process.run()
-            process.waitUntilExit()
+    /// Use the preferences API so deleting an already-absent key is harmless,
+    /// and a failed write cannot silently proceed to application restarts.
+    private func writePreferences() throws {
+        struct WriteError: LocalizedError {
+            var errorDescription: String? { "Could not save menu bar spacing. Applications were left running." }
         }
-
-        return try await task.value
-    }
-
-    /// Removes the value for the specified key.
-    private func removeValue(forKey key: Key) async throws {
-        try await runCommand("defaults", with: ["-currentHost", "delete", "-globalDomain", key.rawValue])
-    }
-
-    /// Sets the value for the specified key to the key's default value plus the given offset.
-    private func setOffset(_ offset: Int, forKey key: Key) async throws {
-        try await runCommand("defaults", with: ["-currentHost", "write", "-globalDomain", key.rawValue, "-int", String(key.defaultValue + offset)])
+        for key in Key.allCases {
+            let value = offset == 0 ? nil : NSNumber(value: key.defaultValue + offset)
+            CFPreferencesSetValue(
+                key.rawValue as CFString,
+                value,
+                kCFPreferencesAnyApplication,
+                kCFPreferencesCurrentUser,
+                kCFPreferencesCurrentHost
+            )
+        }
+        guard CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost) else {
+            throw WriteError()
+        }
     }
 
     /// Returns a log string for the given app.
@@ -82,31 +74,9 @@ final class MenuBarItemSpacingManager {
             Logger.spacing.debug("Signaling application \"\(logString(for: app))\" to quit")
         }
 
-        app.terminate()
-
-        var cancellable: AnyCancellable?
-        return try await withCheckedThrowingContinuation { continuation in
-            let timeoutTask = Task {
-                try await Task.sleep(for: .seconds(forceTerminateDelay))
-                if !app.isTerminated {
-                    Logger.spacing.debug("Application \"\(logString(for: app))\" did not terminate within \(forceTerminateDelay) seconds, attempting to force terminate")
-                    app.forceTerminate()
-                }
-            }
-
-            cancellable = app.publisher(for: \.isTerminated).sink { [weak self] isTerminated in
-                guard
-                    let self,
-                    isTerminated
-                else {
-                    return
-                }
-                timeoutTask.cancel()
-                cancellable?.cancel()
-                Logger.spacing.debug("Application \"\(logString(for: app))\" terminated successfully")
-                continuation.resume()
-            }
-        }
+        try await GracefulApplicationTermination.terminate(
+            isTerminated: { app.isTerminated }, requestTermination: { app.terminate() }
+        )
     }
 
     /// Asynchronously launches the app at the given URL.
@@ -142,15 +112,9 @@ final class MenuBarItemSpacingManager {
 
     /// Applies the current ``offset``.
     ///
-    /// - Note: Calling this restarts all apps with a menu bar item.
+    /// - Note: This requests cooperative restarts; apps can decline or wait for saving.
     func applyOffset() async throws {
-        if offset == 0 {
-            try await removeValue(forKey: .spacing)
-            try await removeValue(forKey: .padding)
-        } else {
-            try await setOffset(offset, forKey: .spacing)
-            try await setOffset(offset, forKey: .padding)
-        }
+        try writePreferences()
 
         try? await Task.sleep(for: .milliseconds(100))
 
@@ -166,7 +130,7 @@ final class MenuBarItemSpacingManager {
                     app.bundleIdentifier != "com.apple.controlcenter", // ControlCenter handles its own relaunch, so skip it.
                     app != .current
                 else {
-                    break
+                    continue
                 }
                 group.addTask { @MainActor in
                     do {

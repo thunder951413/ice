@@ -389,7 +389,7 @@ struct GeneralSettingsPane: View {
             }
         }
         .annotation(
-            "Applying this setting will relaunch all apps with menu bar items. Some apps may need to be manually relaunched.",
+            "Applying this setting asks apps with menu bar items to quit and reopen. Apps waiting for saving or declining to quit stay running and can be restarted manually.",
             spacing: 2
         )
         .annotation(spacing: 10, font: .callout.bold()) {
@@ -419,9 +419,11 @@ struct GeneralSettingsPane: View {
                     appState.menuBarManager.toggleHidingPaused()
                 }
                 .accessibilityLabel(appState.menuBarManager.isHidingPaused ? "Resume hiding menu bar items" : "Pause hiding menu bar items")
-                .accessibilityHint(appState.menuBarManager.isHidingPaused
-                    ? "Restores the menu bar hiding state from before the pause"
-                    : "Temporarily reveals items without changing the saved menu bar layout")
+                .accessibilityHint(
+                    appState.menuBarManager.isHidingPaused
+                        ? "Restores the menu bar hiding state from before the pause"
+                        : "Temporarily reveals items without changing the saved menu bar layout"
+                )
 
                 Button("Reset Menu Bar Layout…", role: .destructive) {
                     isConfirmingLayoutReset = true

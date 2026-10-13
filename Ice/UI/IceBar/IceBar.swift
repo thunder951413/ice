@@ -151,8 +151,9 @@ final class IceBarPanel: NSPanel {
                     let displayBounds = CGDisplayBounds(screen.displayID)
                     if let icon = HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier)
                         .first(where: { $0.intersects(displayBounds) }), frame.width <= screen.frame.width {
-                        return CGPoint(x: (icon.midX - frame.width / 2)
-                            .clamped(to: screen.frame.minX...(screen.frame.maxX - frame.width)), y: originY)
+                        let originX = (icon.midX - frame.width / 2)
+                            .clamped(to: screen.frame.minX...(screen.frame.maxX - frame.width))
+                        return CGPoint(x: originX, y: originY)
                     }
                     return getOrigin(for: .mousePointer)
                 }
@@ -393,7 +394,7 @@ private struct IceBarItemView: View {
             }
             closePanel()
             Task {
-                try await Task.sleep(for: .milliseconds(25))
+                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
                 itemManager.tempShowItem(item, clickWhenFinished: true, mouseButton: .left)
             }
         }
@@ -406,7 +407,7 @@ private struct IceBarItemView: View {
             }
             closePanel()
             Task {
-                try await Task.sleep(for: .milliseconds(25))
+                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
                 itemManager.tempShowItem(item, clickWhenFinished: true, mouseButton: .right)
             }
         }
@@ -441,13 +442,11 @@ private struct IceBarItemView: View {
             if let image {
                 if usesHostedAppIcon {
                     Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .resizable().scaledToFit()
                         .frame(width: iconSide, height: iconSide)
                 } else {
                     Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .resizable().scaledToFit()
                         .frame(width: scaledImageSize(image).width, height: scaledImageSize(image).height)
                 }
             } else {
@@ -482,10 +481,10 @@ private struct IceBarItemView: View {
 
 private struct IceBarItemClickView: NSViewRepresentable {
     private final class Represented: NSView {
-        let item: MenuBarItem
+        var item: MenuBarItem
 
-        let leftClickAction: () -> Void
-        let rightClickAction: () -> Void
+        var leftClickAction: () -> Void
+        var rightClickAction: () -> Void
 
         private var lastLeftMouseDownDate = Date.now
         private var lastRightMouseDownDate = Date.now
@@ -629,5 +628,11 @@ private struct IceBarItemClickView: NSViewRepresentable {
         Represented(item: item, leftClickAction: leftClickAction, rightClickAction: rightClickAction)
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) { }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let view = nsView as? Represented else { return }
+        view.item = item
+        view.leftClickAction = leftClickAction
+        view.rightClickAction = rightClickAction
+        view.toolTip = item.displayName
+    }
 }

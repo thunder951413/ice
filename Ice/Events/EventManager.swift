@@ -19,7 +19,7 @@ final class EventManager {
     private var showOnHoverTask: Task<Void, Never>?
 
     /// A native Clock click needs a short assertion-free interval on macOS 27.
-    private var clockMouseDownFrame: CGRect?
+    private var clockMouseDownPoint: CGPoint?
     private var clockActivationTask: Task<Void, Never>?
 
     // MARK: Monitors
@@ -37,7 +37,7 @@ final class EventManager {
             handleShowOnClick(with: event)
             handleSmartRehide(with: event)
         case .rightMouseDown:
-            handleShowRightClickMenu()
+            handleShowRightClickMenu(with: event)
         default:
             break
         }
@@ -141,6 +141,9 @@ final class EventManager {
 
     /// Stops all monitors.
     func stopAll() {
+        clockActivationTask?.cancel()
+        clockActivationTask = nil
+        clockMouseDownPoint = nil
         for monitor in allMonitors {
             monitor.stop()
         }
@@ -157,8 +160,8 @@ extension EventManager {
         guard
             let appState,
             appState.settingsManager.generalSettingsManager.showOnClick,
-            !isMouseInsideIceIcon,
-            isMouseInsideEmptyMenuBarSpace
+            isMouseInsideMenuBar,
+            !isMouseInsideNotch
         else {
             return
         }
@@ -169,9 +172,12 @@ extension EventManager {
             option: event.modifierFlags.contains(.option),
             control: event.modifierFlags.contains(.control)
         )
+        let menuLocation = MouseCursor.locationAppKit
         Task {
+            guard await isEmptyMenuBarClick(event),
+                  appState.settingsManager.generalSettingsManager.showOnClick else { return }
             // Short delay helps the toggle action feel more natural.
-            try? await Task.sleep(for: .milliseconds(50))
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
 
             let action = MenuBarClickPolicy.resolve(
                 button: .primary,
@@ -180,7 +186,9 @@ extension EventManager {
             )
             switch action {
             case .showMenu:
-                handleShowRightClickMenu()
+                if let menuLocation, appState.settingsManager.advancedSettingsManager.showContextMenuOnRightClick {
+                    appState.menuBarManager.showRightClickMenu(at: menuLocation)
+                }
             case .toggleAlwaysHidden:
                 if let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden) {
                     alwaysHiddenSection.toggle()
@@ -275,17 +283,48 @@ extension EventManager {
 
     // MARK: Handle Show Right Click Menu
 
-    private func handleShowRightClickMenu() {
+    private func handleShowRightClickMenu(with event: NSEvent) {
         guard
             let appState,
             appState.settingsManager.advancedSettingsManager.showContextMenuOnRightClick,
-            !isMouseInsideIceIcon,
-            isMouseInsideEmptyMenuBarSpace,
+            isMouseInsideMenuBar,
+            !isMouseInsideNotch,
             let mouseLocation = MouseCursor.locationAppKit
         else {
             return
         }
-        appState.menuBarManager.showRightClickMenu(at: mouseLocation)
+        Task {
+            guard await isEmptyMenuBarClick(event),
+                  appState.settingsManager.advancedSettingsManager.showContextMenuOnRightClick else { return }
+            appState.menuBarManager.showRightClickMenu(at: mouseLocation)
+        }
+    }
+
+    /// A cold/expired snapshot may delay Ice's own action, but never the native
+    /// event. Validate the original click after a coalesced background refresh.
+    private func isEmptyMenuBarClick(_ event: NSEvent) async -> Bool {
+        guard let appState, let screen = bestScreen,
+              let point = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics else { return false }
+        let displayID = screen.displayID
+        let bounds = CGDisplayBounds(displayID)
+        let menuOwner = NSWorkspace.shared.menuBarOwningApplication?.processIdentifier
+        let menuFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID)
+        guard ApplicationMenuGeometry.isEmptySpace(at: point, applicationMenuFrame: menuFrame) else { return false }
+        if HostedItemVisibilityManager.isSupported {
+            if HostedMenuBarBackend.renderedItemFrameSnapshot() == nil {
+                guard await HostedMenuBarBackend.refreshRenderedSnapshot() else { return false }
+            }
+            guard !Task.isCancelled,
+                  NSWorkspace.shared.menuBarOwningApplication?.processIdentifier == menuOwner,
+                  NSScreen.screens.contains(where: { $0.displayID == displayID }) else { return false }
+            return ApplicationMenuGeometry.isEmptyHostedSpace(
+                at: point,
+                applicationMenuFrame: menuFrame,
+                itemFrames: HostedMenuBarBackend.renderedItemFrameSnapshot(),
+                displayBounds: bounds
+            )
+        }
+        return !isMouseInsideIceIcon && !isMouseInsideMenuBarItem
     }
 
     // MARK: Handle Prevent Show On Hover
@@ -338,21 +377,25 @@ extension EventManager {
     // MARK: Handle System Clock
 
     private func handleClockMouseDown(with event: NSEvent) {
-        clockMouseDownFrame = nil
+        clockMouseDownPoint = nil
         guard let appState,
               appState.menuBarManager.hostedItemVisibilityManager.needsClockActivationBridge,
               clockActivationTask == nil,
+              event.modifierFlags.isDisjoint(with: [.command, .control, .option]),
+              isMouseInsideMenuBar,
               let location = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics
         else { return }
-        clockMouseDownFrame = HostedMenuBarBackend.systemClockFrame(at: location)
+        if HostedMenuBarBackend.renderedItemFrameSnapshot() != nil,
+           HostedMenuBarBackend.systemClockFrame(at: location) == nil { return }
+        clockMouseDownPoint = location
     }
 
     private func handleClockMouseUp(with event: NSEvent) {
-        guard let frame = clockMouseDownFrame else { return }
-        clockMouseDownFrame = nil
+        guard let downPoint = clockMouseDownPoint else { return }
+        clockMouseDownPoint = nil
         guard let appState,
               let location = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics,
-              frame.insetBy(dx: -4, dy: -4).contains(location),
+              hypot(location.x - downPoint.x, location.y - downPoint.y) <= 6,
               let screen = NSScreen.screens.first(where: { CGDisplayBounds($0.displayID).contains(location) })
         else { return }
 
@@ -362,7 +405,12 @@ extension EventManager {
             // Let the native click finish first. This also avoids toggling an
             // already-open panel if a later macOS release fixes this behavior.
             try? await Task.sleep(for: .milliseconds(100))
-            guard !Task.isCancelled, !Self.isNotificationCenterOpen(),
+            guard !Task.isCancelled, !Self.isNotificationCenterOpen() else { return }
+            if HostedMenuBarBackend.renderedItemFrameSnapshot() == nil {
+                guard await HostedMenuBarBackend.refreshRenderedSnapshot() else { return }
+            }
+            guard let frame = HostedMenuBarBackend.systemClockFrame(at: downPoint),
+                  frame.insetBy(dx: -4, dy: -4).contains(location),
                   visibility.beginClockActivationBridge()
             else { return }
             defer { visibility.endClockActivationBridge() }
@@ -374,7 +422,7 @@ extension EventManager {
             var didPress = false
             for _ in 0..<10 {
                 guard !Task.isCancelled else { return }
-                if HostedMenuBarBackend.pressSystemClock(on: screen.displayID) {
+                if await HostedMenuBarBackend.pressSystemClock(on: screen.displayID) {
                     didPress = true
                     break
                 }
@@ -383,23 +431,16 @@ extension EventManager {
             guard didPress else { return }
 
             // Reapplying the assertion closes Notification Center. Restore it
-            // after the panel disappears, with a bounded timeout for recovery.
-            var appeared = false
-            var closedSamples = 0
-            for _ in 0..<300 {
+            // after confirmed closure; slow polling for long reading sessions.
+            var session = ClockPanelVisibilitySession()
+            let started = ContinuousClock.now
+            while true {
                 guard !Task.isCancelled else { return }
-                if Self.isNotificationCenterOpen() {
-                    appeared = true
-                    closedSamples = 0
-                } else if appeared {
-                    closedSamples += 1
-                    if closedSamples >= 3 { return }
-                } else if closedSamples >= 20 {
-                    return
-                } else {
-                    closedSamples += 1
+                switch session.observe(isOpen: Self.isNotificationCenterOpen(), elapsed: started.duration(to: .now)) {
+                case .restore: return
+                case .wait(let interval):
+                    do { try await Task.sleep(for: interval) } catch { return }
                 }
-                try? await Task.sleep(for: .milliseconds(100))
             }
         }
     }
@@ -479,7 +520,7 @@ extension EventManager {
         let delay = appState.settingsManager.advancedSettingsManager.showOnHoverDelay
         let shouldShow = hiddenSection.isHidden
         if shouldShow {
-            guard isMouseInsideEmptyMenuBarSpace else {
+            guard isMouseInsideMenuBar, !isMouseInsideNotch else {
                 return
             }
         } else {
@@ -505,7 +546,7 @@ extension EventManager {
             if shouldShow {
                 guard
                     hiddenSection.isHidden,
-                    self.isMouseInsideEmptyMenuBarSpace
+                    await self.isMouseInsideEmptyMenuBarSpaceAfterRefresh()
                 else {
                     return
                 }
@@ -515,7 +556,7 @@ extension EventManager {
                     !Task.isCancelled,
                     self.appState?.settingsManager.generalSettingsManager.showOnHover == true,
                     hiddenSection.isHidden,
-                    self.isMouseInsideEmptyMenuBarSpace
+                    await self.isMouseInsideEmptyMenuBarSpaceAfterRefresh()
                 else {
                     return
                 }
@@ -542,6 +583,14 @@ extension EventManager {
                 hiddenSection.hide()
             }
         }
+    }
+
+    private func isMouseInsideEmptyMenuBarSpaceAfterRefresh() async -> Bool {
+        if HostedItemVisibilityManager.isSupported,
+           HostedMenuBarBackend.renderedItemFrameSnapshot() == nil {
+            guard await HostedMenuBarBackend.refreshRenderedSnapshot() else { return false }
+        }
+        return !Task.isCancelled && isMouseInsideEmptyMenuBarSpace
     }
 
     // MARK: Handle Show On Scroll
@@ -668,6 +717,14 @@ extension EventManager {
             at: point,
             applicationMenuFrame: appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
         ) else { return false }
+        if HostedItemVisibilityManager.isSupported {
+            return ApplicationMenuGeometry.isEmptyHostedSpace(
+                at: point,
+                applicationMenuFrame: appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID),
+                itemFrames: HostedMenuBarBackend.renderedItemFrameSnapshot(),
+                displayBounds: CGDisplayBounds(screen.displayID)
+            )
+        }
         return !isMouseInsideMenuBarItem
     }
 

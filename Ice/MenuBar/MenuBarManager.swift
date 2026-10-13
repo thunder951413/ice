@@ -136,7 +136,7 @@ final class MenuBarManager: ObservableObject {
                     !appState.eventManager.isMouseInsideMenuBar
                 {
                     Task {
-                        try await Task.sleep(for: .seconds(0.1))
+                        do { try await Task.sleep(for: .seconds(0.1)) } catch { return }
                         hiddenSection.hide()
                     }
                 }
@@ -399,11 +399,11 @@ final class MenuBarManager: ObservableObject {
                     try await appState.spacingManager.applyOffset()
                 } catch {
                     Logger.menuBarManager.error("Error resetting item spacing: \(error)")
+                    NSAlert(error: error).runModal()
                 }
             }
         }
     }
-
 
     /// Shows the right-click menu.
     func showRightClickMenu(at point: CGPoint) {

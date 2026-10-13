@@ -10,7 +10,24 @@ enum ApplicationMenuGeometryTests {
         testWrongDisplaySnapshotFailsClosed()
         testSecondaryDisplayCoordinates()
         testFrameUnionIncludesEveryTitle()
+        testHostedSnapshotFailureAndIconColumns()
         print("ApplicationMenuGeometryTests passed")
+    }
+
+    private static func testHostedSnapshotFailureAndIconColumns() {
+        let display = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let menu = CGRect(x: 0, y: 0, width: 300, height: 24)
+        let icon = CGRect(x: 1000, y: 4, width: 24, height: 18)
+        func empty(_ x: CGFloat, _ frames: [CGRect]?) -> Bool {
+            ApplicationMenuGeometry.isEmptyHostedSpace(at: CGPoint(x: x, y: 1), applicationMenuFrame: menu,
+                                                      itemFrames: frames, displayBounds: display)
+        }
+        expect(!empty(500, nil), "an unavailable host snapshot must never authorize a click")
+        expect(empty(500, []), "a complete empty snapshot must allow actual empty space")
+        expect(!empty(1001, [icon]), "an icon column must protect top/bottom padding too")
+        expect(!empty(998, [icon]), "the icon edge margin must stay protected")
+        expect(empty(900, [icon]), "verified space between application menus and status items must remain usable")
+        expect(!empty(200, [icon]), "application menu titles must remain protected")
     }
 
     private static func testAppleMenuTitlesAndGapsAreProtected() {

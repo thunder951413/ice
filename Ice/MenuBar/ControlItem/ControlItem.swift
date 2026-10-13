@@ -222,7 +222,7 @@ final class ControlItem {
         ) { [weak self] event in
             guard
                 let self,
-                let point = CGEvent(source: nil)?.location
+                let point = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics
             else {
                 return
             }
@@ -236,18 +236,22 @@ final class ControlItem {
 
             // Share the same host snapshot as empty-space hit testing. A global
             // AX hit test can resolve a stale proxy or another process's icon.
-            let iceIconHit = HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier)
-                .contains { frame in
-                    frame.insetBy(dx: -2, dy: -4).contains(point)
-                }
-            guard iceIconHit else { return }
             let eventType = event.type
             let modifiers = event.modifierFlags
+            let lastHandledClick = lastClickDate
 
             Task { @MainActor [weak self] in
                 guard let self else {
                     return
                 }
+                if HostedMenuBarBackend.renderedItemFrameSnapshot(for: ProcessInfo.processInfo.processIdentifier) == nil {
+                    guard await HostedMenuBarBackend.refreshRenderedSnapshot() else { return }
+                }
+                // The native button may already have handled this event while
+                // its background geometry refresh was pending.
+                guard lastClickDate == lastHandledClick,
+                      HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier)
+                        .contains(where: { $0.insetBy(dx: -2, dy: -4).contains(point) }) else { return }
                 switch eventType {
                 case .leftMouseDown:
                     routeClick(.primary, modifiers: modifiers, menuAtMouseLocation: true)

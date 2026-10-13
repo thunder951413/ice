@@ -11,8 +11,12 @@ import CoreGraphics
 enum ApplicationMenuGeometry {
     static func frame(itemFrames: [CGRect], displayBounds: CGRect) -> CGRect? {
         guard !itemFrames.isEmpty else { return nil }
-        let menuBand = CGRect(x: displayBounds.minX, y: displayBounds.minY,
-                              width: displayBounds.width, height: 80)
+        let menuBand = CGRect(
+            x: displayBounds.minX,
+            y: displayBounds.minY,
+            width: displayBounds.width,
+            height: 80
+        )
         guard itemFrames.allSatisfy({ frame in
             !frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0
                 && frame.height <= 80 && frame.intersects(menuBand)
@@ -20,8 +24,12 @@ enum ApplicationMenuGeometry {
         let union = itemFrames.reduce(CGRect.null) { $0.union($1) }
         guard union.maxX > displayBounds.minX, union.maxX <= displayBounds.maxX else { return nil }
         // Include the Apple menu and the gaps between application menu titles.
-        return CGRect(x: displayBounds.minX, y: union.minY,
-                      width: union.maxX - displayBounds.minX, height: union.height)
+        return CGRect(
+            x: displayBounds.minX,
+            y: union.minY,
+            width: union.maxX - displayBounds.minX,
+            height: union.height
+        )
     }
 
     static func isEmptySpace(at point: CGPoint, applicationMenuFrame: CGRect?) -> Bool {
@@ -29,5 +37,14 @@ enum ApplicationMenuGeometry {
         // The caller has already established that the point is in the menu
         // bar. Protect title columns across its full height, including padding.
         return point.x > applicationMenuFrame.maxX
+    }
+
+    static func isEmptyHostedSpace(
+        at point: CGPoint, applicationMenuFrame: CGRect?, itemFrames: [CGRect]?, displayBounds: CGRect
+    ) -> Bool {
+        guard isEmptySpace(at: point, applicationMenuFrame: applicationMenuFrame), let itemFrames else { return false }
+        return !itemFrames.contains {
+            $0.intersects(displayBounds) && point.x >= $0.minX - 2 && point.x <= $0.maxX + 2
+        }
     }
 }

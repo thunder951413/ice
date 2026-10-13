@@ -60,16 +60,22 @@ final class HostedItemVisibilityManager: ObservableObject {
             failureDescription = "This macOS version does not provide the menu bar hiding interface. Items remain visible."
         }
         let changes = Publishers.MergeMany(
-            [appState.itemManager.$itemCache.mapToVoid().eraseToAnyPublisher(),
-             appState.settingsManager.generalSettingsManager.$useIceBar.mapToVoid().eraseToAnyPublisher(),
-             appState.settingsManager.advancedSettingsManager.$enableAlwaysHiddenSection.mapToVoid().eraseToAnyPublisher(),
-             appState.menuBarManager.$isHidingPaused.mapToVoid().eraseToAnyPublisher()]
+            [
+                appState.itemManager.$itemCache.mapToVoid().eraseToAnyPublisher(),
+                appState.settingsManager.generalSettingsManager.$useIceBar.mapToVoid().eraseToAnyPublisher(),
+                appState.settingsManager.advancedSettingsManager.$enableAlwaysHiddenSection.mapToVoid().eraseToAnyPublisher(),
+                appState.menuBarManager.$isHidingPaused.mapToVoid().eraseToAnyPublisher(),
+            ]
                 + appState.menuBarManager.sections.map { $0.controlItem.$state.mapToVoid().eraseToAnyPublisher() }
         )
         changes.sink { [weak self] in self?.scheduleRefresh() }.store(in: &cancellables)
 
-        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
-                     NSWorkspace.didWakeNotification, NSWorkspace.activeSpaceDidChangeNotification] {
+        for name in [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.activeSpaceDidChangeNotification,
+        ] {
             NSWorkspace.shared.notificationCenter.publisher(for: name)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
@@ -220,8 +226,9 @@ final class HostedItemVisibilityManager: ObservableObject {
         guard !isStopped else { throw CancellationError() }
         guard checkAccessibility() else { throw RevealError.permissionRequired }
         guard let bundle = item.hostedHandle?.sourceBundleIdentifier else { throw RevealError.unavailable }
-        let baselineWindowIDs = Set(WindowInfo.getOnScreenWindows()
-            .filter { $0.ownerPID == item.ownerPID }.map(\.windowID))
+        let baselineWindowIDs = Set(
+            WindowInfo.getOnScreenWindows().filter { $0.ownerPID == item.ownerPID }.map(\.windowID)
+        )
         if let previous = revealTokens[bundle] { finishRevealWaiter(previous, error: CancellationError()) }
         let token = UUID()
         revealTokens[bundle] = token
@@ -230,8 +237,13 @@ final class HostedItemVisibilityManager: ObservableObject {
         revealTasks[bundle] = nil
         var didPerformAction = false
         defer {
-            scheduleRehide(item, bundle: bundle, token: token,
-                baselineWindowIDs: baselineWindowIDs, didPerformAction: didPerformAction)
+            scheduleRehide(
+                item,
+                bundle: bundle,
+                token: token,
+                baselineWindowIDs: baselineWindowIDs,
+                didPerformAction: didPerformAction
+            )
         }
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -269,8 +281,7 @@ final class HostedItemVisibilityManager: ObservableObject {
     private func finishRevealWaiter(_ token: UUID, error: Error?) {
         guard let waiter = revealWaiters.removeValue(forKey: token) else { return }
         waiter.timeout.cancel()
-        if let error { waiter.continuation.resume(throwing: error) }
-        else { waiter.continuation.resume() }
+        if let error { waiter.continuation.resume(throwing: error) } else { waiter.continuation.resume() }
     }
 
     private func failRevealWaiters(_ error: Error) {
@@ -278,8 +289,11 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     private func scheduleRehide(
-        _ item: MenuBarItem, bundle: String, token: UUID,
-        baselineWindowIDs: Set<CGWindowID>, didPerformAction: Bool
+        _ item: MenuBarItem,
+        bundle: String,
+        token: UUID,
+        baselineWindowIDs: Set<CGWindowID>,
+        didPerformAction: Bool
     ) {
         guard revealTokens[bundle] == token, !isStopped else { return }
         let configuredDelay = appState?.settingsManager.advancedSettingsManager.tempShowInterval ?? 15
@@ -290,9 +304,16 @@ final class HostedItemVisibilityManager: ObservableObject {
         revealTasks[bundle] = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             guard let self else { return }
-            while WindowInfo.getOnScreenWindows().contains(where: {
-                $0.ownerPID == item.ownerPID && !baselineWindowIDs.contains($0.windowID)
-            }) {
+            let waitStarted = ContinuousClock.now
+            while didPerformAction && TemporaryRevealRehidePolicy.shouldWait(
+                windows: WindowInfo.getOnScreenWindows().map {
+                    .init(id: $0.windowID, ownerPID: $0.ownerPID, layer: $0.layer)
+                },
+                ownerPID: item.ownerPID,
+                baselineIDs: baselineWindowIDs,
+                interfaceLayers: Int(CGWindowLevelForKey(.modalPanelWindow))...Int(CGWindowLevelForKey(.popUpMenuWindow)),
+                elapsed: waitStarted.duration(to: .now)
+            ) {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
             }
             guard self.revealTokens[bundle] == token, !Task.isCancelled else { return }
@@ -307,6 +328,10 @@ final class HostedItemVisibilityManager: ObservableObject {
     private func checkAccessibility() -> Bool {
         guard AXIsProcessTrusted() else {
             permissionWasAvailable = false
+            revealTasks.values.forEach { $0.cancel() }
+            revealTasks.removeAll()
+            revealTokens.removeAll()
+            temporarilyRevealedBundles.removeAll()
             failRevealWaiters(RevealError.permissionRequired)
             if assertion.isActive || assertion.isActivating {
                 releaseRestriction()

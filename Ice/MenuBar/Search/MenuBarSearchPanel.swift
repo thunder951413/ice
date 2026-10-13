@@ -330,7 +330,7 @@ private struct MenuBarSearchContentView: View {
     private func performAction(for item: MenuBarItem) {
         closePanel()
         Task {
-            try await Task.sleep(for: .milliseconds(25))
+            do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
             itemManager.tempShowItem(item, clickWhenFinished: true, mouseButton: .left)
         }
     }
@@ -387,8 +387,7 @@ private struct SettingsButton: View {
     var body: some View {
         BottomBarButton(action: action) {
             Image(.iceCubeStroke)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
+                .resizable().scaledToFit()
                 .frame(width: 18, height: 18)
                 .foregroundStyle(.secondary)
                 .padding(2)
@@ -409,8 +408,7 @@ private struct ShowItemButton: View {
                     .padding(.horizontal, 5)
 
                 Image(systemName: "return")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
+                    .resizable().scaledToFit()
                     .frame(width: 11, height: 11)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
@@ -466,8 +464,7 @@ private struct MenuBarSearchItemView: View {
         HStack {
             if let appIcon {
                 Image(nsImage: appIcon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
+                    .resizable().scaledToFit()
                     .frame(width: 24, height: 24)
             }
             Text(item.displayName)

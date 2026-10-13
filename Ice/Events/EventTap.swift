@@ -227,7 +227,7 @@ final class EventTap {
     func enable(timeout: Duration, onTimeout: @escaping () -> Void) {
         enable()
         Task { [weak self] in
-            try await Task.sleep(for: timeout)
+            do { try await Task.sleep(for: timeout) } catch { return }
             if self?.isEnabled == true {
                 onTimeout()
             }

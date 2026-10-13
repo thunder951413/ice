@@ -3,42 +3,22 @@ on:
   push:
     branches: [ "codex/macos27-compat" ]
     paths:
-      - ".github/workflows/lint.yml"
-      - ".github/workflows/release.yml"
+      - ".github/workflows/**"
       - ".swiftlint.yml"
-      - "**/*.swift"
-      - "Ice/Info.plist"
-      - "Ice.xcodeproj/project.pbxproj"
-      - "Scripts/create-appcast.py"
-      - "Scripts/verify-release.py"
-      - "Scripts/test-verify-release.py"
-      - "Scripts/test-visibility-assertion-session.sh"
-      - "Scripts/test-hosted-visibility-policy.sh"
-      - "Scripts/test-hosted-enumeration-scan-policy.sh"
-      - "Scripts/test-menu-bar-click-policy.sh"
-      - "Scripts/test-application-menu-geometry.sh"
-      - "Scripts/test-login-item-manager.sh"
-      - "Scripts/test-search-hotkey-availability.sh"
-      - "Scripts/build-local.sh"
+      - "Ice/**"
+      - "Ice.xcodeproj/**"
+      - "Packages/**"
+      - "Tests/**"
+      - "Scripts/**"
   pull_request:
     paths:
-      - ".github/workflows/lint.yml"
-      - ".github/workflows/release.yml"
+      - ".github/workflows/**"
       - ".swiftlint.yml"
-      - "**/*.swift"
-      - "Ice/Info.plist"
-      - "Ice.xcodeproj/project.pbxproj"
-      - "Scripts/create-appcast.py"
-      - "Scripts/verify-release.py"
-      - "Scripts/test-verify-release.py"
-      - "Scripts/test-visibility-assertion-session.sh"
-      - "Scripts/test-hosted-visibility-policy.sh"
-      - "Scripts/test-hosted-enumeration-scan-policy.sh"
-      - "Scripts/test-menu-bar-click-policy.sh"
-      - "Scripts/test-application-menu-geometry.sh"
-      - "Scripts/test-login-item-manager.sh"
-      - "Scripts/test-search-hotkey-availability.sh"
-      - "Scripts/build-local.sh"
+      - "Ice/**"
+      - "Ice.xcodeproj/**"
+      - "Packages/**"
+      - "Tests/**"
+      - "Scripts/**"
 jobs:
   swiftlint:
     name: SwiftLint diagnostics
@@ -69,13 +49,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run deterministic policy tests
         run: |
-          ./Scripts/test-hosted-visibility-policy.sh
-          ./Scripts/test-hosted-enumeration-scan-policy.sh
-          ./Scripts/test-menu-bar-click-policy.sh
-          ./Scripts/test-application-menu-geometry.sh
-          ./Scripts/test-login-item-manager.sh
-          ./Scripts/test-search-hotkey-availability.sh
-          ./Scripts/test-visibility-assertion-session.sh
+          ./Scripts/test-regressions.sh
       - name: Build unsigned Debug app
         env:
           CONFIGURATION: Debug

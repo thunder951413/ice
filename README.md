@@ -64,12 +64,9 @@ Sparkle 更新源来自本仓库 `updates` 分支的 `appcast.xml`，更新包�
 ```sh
 ./Scripts/build-local.sh -quiet
 CONFIGURATION=Release ./Scripts/build-local.sh -quiet
-./Scripts/test-hosted-visibility-policy.sh
-./Scripts/test-menu-bar-click-policy.sh
-./Scripts/test-hosted-enumeration-scan-policy.sh
-./Scripts/test-visibility-assertion-session.sh
-python3 Scripts/test-verify-release.py
-./Scripts/test-icebar-surface.sh
+./Scripts/test-regressions.sh
+# 需要 macOS 27 和运行终端的辅助功能权限；只读，不点击或隐藏应用
+./Scripts/test-hosted-snapshot.sh
 # 先退出 Ice；该测试仅操作临时测试应用
 ./Scripts/test-hosted-visibility.sh
 ```
@@ -77,6 +74,8 @@ python3 Scripts/test-verify-release.py
 `build-local.sh` 自动使用本机 Apple Development 证书；没有证书时构建未签名版本。输出位于 `build/DerivedData`。CompactSlider 1.1.6 已保留许可证并随仓库提供，包含 Xcode 27 所需的重载消歧修正。
 
 原生测试默认检查三轮隐藏／恢复；`ICE_TEST_ALLOWLIST=1` 可启用临时应用的严格允许列表诊断，该诊断在当前系统上仍有已知失败，不能等同于正式安装副本的测试。
+
+`test-regressions.sh` 汇总十二组策略回归、发布包校验测试、原生桥接编译和四种 Ice Bar 表面渲染。CI 也使用该入口，Swift、Objective-C 桥接、项目与测试脚本变更都会触发检查。只读快照测试另行验证真实 MenuBarAgent 的后台读取与完整扫描结果，不在没有辅助功能权限的 CI 环境中执行。
 
 发布流程与签名说明见 [发布指南](Docs/releasing.md)。GitHub Actions 校验已准备的发行包、签名和版本，再发布 Release 与更新源；Apple 签名私钥无需上传 GitHub。
 

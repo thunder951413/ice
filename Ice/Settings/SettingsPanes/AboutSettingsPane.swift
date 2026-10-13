@@ -18,7 +18,6 @@ struct AboutSettingsPane: View {
     }
 
     private var contributeURL: URL {
-        // swiftlint:disable:next force_unwrapping
         URL(string: "https://github.com/thunder951413/ice")!
     }
 
@@ -27,7 +26,6 @@ struct AboutSettingsPane: View {
     }
 
     private var donateURL: URL {
-        // swiftlint:disable:next force_unwrapping
         URL(string: "https://icemenubar.app/Donate")!
     }
 
@@ -72,7 +70,7 @@ struct AboutSettingsPane: View {
                 if let nsImage = NSImage(named: NSImage.applicationIconName) {
                     Image(nsImage: nsImage)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .scaledToFit()
                         .frame(width: 225)
                 }
 

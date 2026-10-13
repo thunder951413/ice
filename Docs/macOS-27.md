@@ -216,3 +216,50 @@ and choose Ice Bar settings; turn Show Ice icon off, open the preview without
 resurrecting the icon, turn it back on; Escape; close Settings and click the
 real menu-bar SItem. The resulting compact Bar was visually inspected through
 its actual window screenshot (not only an offscreen surface render).
+
+## Reliability fixes (2026-10-01, Ice 0.12.5 / 1130)
+
+The comprehensive review identified one P1 and six P2 defects. This revision
+addresses all seven, with related cancellation and descriptor-update repairs:
+
+| Area | Resulting behavior | Verification |
+| --- | --- | --- |
+| Spacing and layout recovery | Application restarts request cooperative termination, wait up to five seconds, and leave refusing or still-saving apps running. Failed preference writes stop the operation. A skipped owner no longer stops processing the remaining owners. | Already-exited, refused, timeout, cooperative-exit and cancellation regressions |
+| Temporary reveal | Ordinary document/settings windows no longer extend a reveal indefinitely. New menu/popup windows can extend it, with a 120-second recovery bound. Permission revocation cancels outstanding reveals. | Layer, baseline-window, other-owner, closure and timeout regressions |
+| Deleted icons and changed metadata | Complete scans remove missing items from visible owners. Partial/failed scans and concealed owners retain their descriptors. Owner restarts and changed metadata update the Ice Bar's item and click actions. | Snapshot merge regressions and strict build checks |
+| Rendered menu bar snapshot | AX traversal runs on a serial background queue with a 500 ms scan budget, 50 ms messaging timeout and node/depth bounds. Role-less MenuBarAgent containers are traversed. Expired, failed or incomplete reads remain unknown. | Live, read-only MenuBarAgent smoke; cold UI reads return immediately |
+| Clicks and hover | Cold/expired snapshots refresh asynchronously before Ice acts. Revealed items reacquire rendered geometry before activation. Layout invalidation retries a waiting scan; cancellation stops only the cancelled caller, preserving a shared scan. | Occupancy, async cache, coalescing, invalidation and cancellation regressions |
+| Clock bridge | Notification Center has no 30-second forced closure. Polling slows after 30 seconds; the restriction returns after confirmed closure, or after failure to open. | Long sessions (31 and 600 seconds), transient absence, confirmed closure and failed-opening policy regressions |
+| CI coverage | Swift, Objective-C, headers, Xcode project, packages and test/script changes trigger checks. One regression entry point runs all deterministic suites and bridge/surface verification. | Strict SwiftLint and local workflow-equivalent checks |
+
+Local acceptance on macOS 27.0 (26A428), Xcode 27.0:
+
+- Twelve Swift policy suites and three release-verification tests passed.
+- The Objective-C bridge compiled and linked with warnings treated as errors.
+- Four Ice Bar surface rendering combinations passed.
+- Strict SwiftLint 0.65.1 passed; the six throwing-Task compiler warnings were removed.
+- Unsigned Debug and development-signed universal Release (arm64/x86_64) built.
+- The read-only live snapshot smoke passed both with Ice stopped and with hiding
+  active. Complete owner counts vary with the bounded enumeration cursor; a
+  failed owner is retained for a later retry.
+- The opt-in native fixture passed three consecutive hide/replacement/restore
+  cycles while Ice was stopped.
+- The local archive passed version/build, SHA-256, length and Ed25519 checks;
+  the app passed strict code-signature verification.
+
+The installed application was updated from 0.12.3 (1128) at its registered
+`/Applications/Ice.app` location. The original bundle and preferences are kept
+under `build/backups/20260930-pre-0.12.5`. Local distribution artifacts are in
+`build/releases/v0.12.5`; this task does not publish them to GitHub's update feed.
+
+Physical hosted-icon clicks, the actual Notification Center panel remaining
+open beyond 30 seconds, and real application popup rehide were not completed
+as runtime acceptance: the computer-use tool reports hosted elements as
+offscreen and the host as having no eligible input window; the Mac subsequently
+locked before the final interaction check. Ice was restarted in the background
+after deployment, and its installed binary matches the validated Release.
+These behaviors are covered
+by the policy/geometry tests above, but are not recorded as native UI passes.
+Intel hardware, macOS 14–26, multiple displays and sleep/wake acceptance also
+remain outside this machine's completed runtime checks. The existing private
+API and development-signing compatibility limits still apply.

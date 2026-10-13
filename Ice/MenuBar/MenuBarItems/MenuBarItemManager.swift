@@ -231,22 +231,22 @@ final class MenuBarItemManager: ObservableObject {
             ).eraseToAnyPublisher()
         }
         mouseEvents.removeDuplicates()
-        .sink { [weak self] event in
-            guard let self else {
-                return
+            .sink { [weak self] event in
+                guard let self else {
+                    return
+                }
+                switch event.type {
+                case .mouseMoved:
+                    lastMouseMoveStartDate = .now
+                case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+                    isMouseButtonDown = true
+                case .leftMouseUp, .rightMouseUp, .otherMouseUp:
+                    isMouseButtonDown = false
+                default:
+                    break
+                }
             }
-            switch event.type {
-            case .mouseMoved:
-                lastMouseMoveStartDate = .now
-            case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-                isMouseButtonDown = true
-            case .leftMouseUp, .rightMouseUp, .otherMouseUp:
-                isMouseButtonDown = false
-            default:
-                break
-            }
-        }
-        .store(in: &c)
+            .store(in: &c)
 
         cancellables = c
     }
@@ -280,7 +280,7 @@ extension MenuBarItemManager {
         )
         Logger.itemManager.debug(
             "Section delimiters: hidden=\(NSStringFromRect(hiddenControlItem.frame)), " +
-            "alwaysHidden=\(alwaysHiddenControlItem.map { NSStringFromRect($0.frame) } ?? "<disabled>")"
+                "alwaysHidden=\(alwaysHiddenControlItem.map { NSStringFromRect($0.frame) } ?? "<disabled>")"
         )
 
         var cache = ItemCache()
@@ -408,10 +408,14 @@ extension MenuBarItemManager {
         }
 
         if HostedItemVisibilityManager.isSupported {
-            let discovered = await HostedMenuBarBackend.refreshEnumeration()
-                .map(MenuBarItem.init(hostedHandle:))
+            let snapshot = await HostedMenuBarBackend.refreshDescriptorSnapshot()
+            let discovered = snapshot.items.map(MenuBarItem.init(hostedHandle:))
                 .filter { $0.ownerPID != ProcessInfo.processInfo.processIdentifier }
-            cacheHostedItems(discovered: discovered)
+            cacheHostedItems(
+                discovered: discovered,
+                scannedPIDs: snapshot.scannedPIDs,
+                concealedBundles: snapshot.concealedBundles
+            )
             return
         }
 
@@ -506,12 +510,23 @@ extension MenuBarItemManager {
 
     /// Preserve concealed descriptors while their owner is alive: the native
     /// assertion removes them from AX, so absence is not an uninstall signal.
-    private func cacheHostedItems(discovered: [MenuBarItem]? = nil) {
+    private func cacheHostedItems(
+        discovered: [MenuBarItem]? = nil, scannedPIDs: Set<pid_t> = [], concealedBundles: Set<String> = []
+    ) {
         let discovered = (discovered ?? itemCache.allItems)
             .filter { $0.hostedHandle != nil && $0.ownerPID != ProcessInfo.processInfo.processIdentifier }
         let livePIDs = Set(NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }.map(\.processIdentifier))
-        hostedItemSnapshots = hostedItemSnapshots.filter { livePIDs.contains($0.value.ownerPID) }
-        for item in discovered { hostedItemSnapshots[item.stableID] = item }
+        hostedItemSnapshots = HostedItemSnapshotPolicy.merge(
+            existing: hostedItemSnapshots,
+            discovered: discovered,
+            liveOwners: livePIDs,
+            scannedOwners: scannedPIDs,
+            id: { $0.stableID },
+            owner: { $0.ownerPID },
+            preserveMissing: { item in
+                item.hostedHandle?.sourceBundleIdentifier.map { concealedBundles.contains($0) } ?? false
+            }
+        )
         var cache = ItemCache()
         let alwaysEnabled = appState?.settingsManager.advancedSettingsManager.enableAlwaysHiddenSection == true
         for item in hostedItemSnapshots.values {
@@ -522,9 +537,13 @@ extension MenuBarItemManager {
                 of: "|unidentified|", with: "|\(item.title ?? "")|"
             )
             let rawID = item.hostedHandle?.stableID ?? item.stableID
-            let legacyKeys = [item.stableID, legacyID, rawID,
-                              rawID.replacingOccurrences(of: "|unidentified|", with: "||"),
-                              rawID.replacingOccurrences(of: "|unidentified|", with: "|\(item.title ?? "")|")]
+            let legacyKeys = [
+                item.stableID,
+                legacyID,
+                rawID,
+                rawID.replacingOccurrences(of: "|unidentified|", with: "||"),
+                rawID.replacingOccurrences(of: "|unidentified|", with: "|\(item.title ?? "")|"),
+            ]
             var section = ownerKey.flatMap { hostedSectionAssignments[$0] }
                 ?? legacyKeys.lazy.compactMap { self.hostedSectionAssignments[$0] }.first ?? .visible
             if !item.canBeHidden { section = .visible }
@@ -763,7 +782,7 @@ extension MenuBarItemManager {
 
 extension MenuBarItemManager {
     /// Waits asynchronously for the given operation to complete.
-    /// 
+    ///
     /// - Parameters:
     ///   - timeout: Amount of time to wait before throwing an error.
     ///   - operation: The operation to perform.
@@ -1653,7 +1672,7 @@ extension MenuBarItemManager {
 
     /// Moves a menu bar item to the given destination and waits until the move
     /// completes before returning.
-    /// 
+    ///
     /// - Parameters:
     ///   - item: A menu bar item to move.
     ///   - destination: A destination to move the menu bar item.
@@ -1689,6 +1708,12 @@ extension MenuBarItemManager {
 extension MenuBarItemManager {
     /// Clicks the given menu bar item with the given mouse button.
     func click(item: MenuBarItem, with mouseButton: CGMouseButton) async throws {
+        if HostedItemVisibilityManager.isSupported, item.hostedHandle != nil {
+            guard await HostedMenuBarBackend.refreshRenderedSnapshot() else {
+                throw EventError(code: .invalidItem, item: item)
+            }
+            try Task.checkCancellation()
+        }
         if mouseButton == .left, item.hostedHandle?.performPress() == true {
             Logger.itemManager.debug("Pressed hosted \(item.logString) through Accessibility")
             return
@@ -1883,9 +1908,11 @@ extension MenuBarItemManager {
                         let deadline = ContinuousClock.now.advanced(by: .seconds(4))
                         repeat {
                             try validate()
-                            let latest = await HostedMenuBarBackend.refreshEnumeration(force: true)
+                            let descriptors = await HostedMenuBarBackend.refreshEnumeration(force: true)
+                            let hasRenderedSnapshot = await HostedMenuBarBackend.refreshRenderedSnapshot()
+                            let latest = descriptors
                                 .map(MenuBarItem.init(hostedHandle:))
-                                .first { $0.stableID == item.stableID && $0.isOnScreen }
+                                .first { hasRenderedSnapshot && $0.stableID == item.stableID && $0.isOnScreen }
                             try validate()
                             if let latest {
                                 try await self.click(item: latest, with: mouseButton)
@@ -2000,9 +2027,9 @@ extension MenuBarItemManager {
 
             let shownInterfaceWindow = currentWindows.first { currentWindow in
                 currentWindow.ownerPID == item.ownerPID &&
-                !initialWindows.contains { initialWindow in
-                    currentWindow.windowID == initialWindow.windowID
-                }
+                    !initialWindows.contains { initialWindow in
+                        currentWindow.windowID == initialWindow.windowID
+                    }
             }
 
             let context = TempShownItemContext(

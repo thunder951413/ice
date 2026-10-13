@@ -91,9 +91,9 @@ struct MenuBarItem {
         }
         var bestName: String {
             owningApplication.localizedName ??
-            ownerName ??
-            owningApplication.bundleIdentifier ??
-            fallback
+                ownerName ??
+                owningApplication.bundleIdentifier ??
+                fallback
         }
         guard let title else {
             return bestName
@@ -265,7 +265,8 @@ extension MenuBarItem {
 // MARK: MenuBarItem: Equatable
 extension MenuBarItem: Equatable {
     static func == (lhs: MenuBarItem, rhs: MenuBarItem) -> Bool {
-        lhs.stableID == rhs.stableID && lhs.frame == rhs.frame && lhs.isOnScreen == rhs.isOnScreen
+        lhs.stableID == rhs.stableID && lhs.ownerPID == rhs.ownerPID && lhs.info == rhs.info &&
+            lhs.window.frame == rhs.window.frame && lhs.window.isOnScreen == rhs.window.isOnScreen
     }
 }
 
@@ -273,8 +274,10 @@ extension MenuBarItem: Equatable {
 extension MenuBarItem: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(stableID)
-        hasher.combine(NSStringFromRect(frame))
-        hasher.combine(isOnScreen)
+        hasher.combine(ownerPID)
+        hasher.combine(info)
+        hasher.combine(NSStringFromRect(window.frame))
+        hasher.combine(window.isOnScreen)
     }
 }
 

@@ -97,14 +97,21 @@ enum HostedMenuBarBackend {
         let frame: CGRect
         let identityStrings: Set<String>
     }
-    private static var renderedSnapshot: (date: Date, items: [RenderedItem])?
-    private static var isReadingRenderedSnapshot = false
-    private static let renderedFrameCacheTTL: TimeInterval = 0.25
+    private static let renderedCache = AsyncSnapshotCache<[RenderedItem]>(lifetime: 0.25)
+    private static let renderedQueue = DispatchQueue(label: "com.jordansamuel.ice.rendered-menu-bar")
 
     /// Cached result of ``enumerate()``. AX enumeration walks every running
     /// application and is synchronous; without caching it stalls the main
     /// thread on every menu bar click and on the 5-second cache refresh timer.
-    private static var enumerationCache: (date: Date, items: [HostedMenuBarItemHandle])?
+    struct DescriptorSnapshot: Sendable {
+        let items: [HostedMenuBarItemHandle]
+        let scannedPIDs: Set<pid_t>
+        let concealedBundles: Set<String>
+
+        static let empty = DescriptorSnapshot(items: [], scannedPIDs: [], concealedBundles: [])
+    }
+
+    private static var enumerationCache: (date: Date, snapshot: DescriptorSnapshot)?
     /// How long a cached enumeration result is considered fresh.
     private static let enumerationTTL: TimeInterval = 2
     /// Guards against concurrent re-enumeration when multiple call sites hit
@@ -122,7 +129,7 @@ enum HostedMenuBarBackend {
     /// Circular cursor used by bounded macOS 27 scans. A slow app cannot keep
     /// later owners permanently beyond the total scan budget.
     private static var enumerationCursor = 0
-    private static var enumerationWaiters = [CheckedContinuation<[HostedMenuBarItemHandle], Never>]()
+    private static var enumerationWaiters = [CheckedContinuation<DescriptorSnapshot, Never>]()
     private static var pendingEnumerationSnapshot: EnumerationSnapshot?
     private static var concealedBundleIdentifiers = Set<String>()
     private static let perApplicationTimeout: Float = 0.15
@@ -170,7 +177,7 @@ enum HostedMenuBarBackend {
         cacheGeneration += 1
         expireEnumerationCacheLocked()
         hitFrameCache.removeAll()
-        renderedSnapshot = nil
+        renderedCache.invalidate()
         enumerationLock.unlock()
     }
 
@@ -217,7 +224,7 @@ enum HostedMenuBarBackend {
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
             requestEnumerationRefresh(force: forceRefresh)
             enumerationLock.lock()
-            let cached = enumerationCache?.items ?? []
+            let cached = enumerationCache?.snapshot.items ?? []
             enumerationLock.unlock()
             return cached
         }
@@ -229,10 +236,10 @@ enum HostedMenuBarBackend {
         enumerationLock.lock()
         if !forceRefresh, let cached = enumerationCache, Date.now.timeIntervalSince(cached.date) < enumerationTTL {
             enumerationLock.unlock()
-            return cached.items
+            return cached.snapshot.items
         }
         if isEnumerating {
-            let cached = enumerationCache?.items ?? []
+            let cached = enumerationCache?.snapshot.items ?? []
             enumerationLock.unlock()
             return cached
         }
@@ -240,12 +247,18 @@ enum HostedMenuBarBackend {
         let generation = cacheGeneration
         enumerationLock.unlock()
 
-        let result = enumerateUncached().items
+        let result = enumerateUncached()
         enumerationLock.lock()
-        if generation == cacheGeneration { enumerationCache = (.now, result) }
+        if generation == cacheGeneration {
+            enumerationCache = (.now, DescriptorSnapshot(
+                items: result.items,
+                scannedPIDs: result.scannedPIDs,
+                concealedBundles: concealedBundleIdentifiers
+            ))
+        }
         isEnumerating = false
         enumerationLock.unlock()
-        return result
+        return result.items
     }
 
     /// Refreshes the hosted descriptor snapshot. This is intended for an
@@ -253,11 +266,16 @@ enum HostedMenuBarBackend {
     /// click after revealing an item). Concurrent requests join the same scan.
     @MainActor
     static func refreshEnumeration(force: Bool = false) async -> [HostedMenuBarItemHandle] {
-        guard AXIsProcessTrusted() else { return [] }
-        let cachedItems = enumerationLock.withLock { () -> [HostedMenuBarItemHandle]? in
+        await refreshDescriptorSnapshot(force: force).items
+    }
+
+    @MainActor
+    static func refreshDescriptorSnapshot(force: Bool = false) async -> DescriptorSnapshot {
+        guard AXIsProcessTrusted() else { return .empty }
+        let cachedItems = enumerationLock.withLock { () -> DescriptorSnapshot? in
             guard !force, let cached = enumerationCache,
                   Date.now.timeIntervalSince(cached.date) < enumerationTTL else { return nil }
-            return cached.items
+            return cached.snapshot
         }
         if let cachedItems { return cachedItems }
         return await refreshEnumeration(snapshot: makeEnumerationSnapshot(), force: force)
@@ -291,17 +309,19 @@ enum HostedMenuBarBackend {
             )
         }
         // NSWorkspace and NSScreen are AppKit snapshots and must stay on main.
-        return EnumerationSnapshot(applications: applications,
-                                   displayBounds: NSScreen.screens.map { CGDisplayBounds($0.displayID) })
+        return EnumerationSnapshot(
+            applications: applications,
+            displayBounds: NSScreen.screens.map { CGDisplayBounds($0.displayID) }
+        )
     }
 
-    private static func refreshEnumeration(snapshot: EnumerationSnapshot, force: Bool) async -> [HostedMenuBarItemHandle] {
+    private static func refreshEnumeration(snapshot: EnumerationSnapshot, force: Bool) async -> DescriptorSnapshot {
         await withCheckedContinuation { continuation in
             enumerationLock.lock()
             if !force, let cached = enumerationCache,
                Date.now.timeIntervalSince(cached.date) < enumerationTTL {
                 enumerationLock.unlock()
-                continuation.resume(returning: cached.items)
+                continuation.resume(returning: cached.snapshot)
                 return
             }
             enumerationWaiters.append(continuation)
@@ -330,14 +350,18 @@ enum HostedMenuBarBackend {
                 // actually queried. Existing descriptors for later owners stay
                 // available until their turn, while exited owners are removed.
                 let retainedOwners = HostedEnumerationScanPolicy.retainedOwners(
-                    existing: Set((enumerationCache?.items ?? []).map(\.sourcePID)),
+                    existing: Set((enumerationCache?.snapshot.items ?? []).map(\.sourcePID)),
                     live: result.livePIDs,
                     scanned: result.scannedPIDs
                 )
-                let retained = (enumerationCache?.items ?? []).filter {
+                let retained = (enumerationCache?.snapshot.items ?? []).filter {
                     retainedOwners.contains($0.sourcePID)
                 }
-                enumerationCache = (.now, retained + result.items)
+                enumerationCache = (.now, DescriptorSnapshot(
+                    items: retained + result.items,
+                    scannedPIDs: result.scannedPIDs,
+                    concealedBundles: concealedBundleIdentifiers
+                ))
             } else if let newerSnapshot = pendingEnumerationSnapshot {
                 // A launch/quit/display event arrived while AX was blocked. Do
                 // not publish its old result; immediately coalesce waiters onto
@@ -351,7 +375,7 @@ enum HostedMenuBarBackend {
             }
             // An invalidation while AX was blocked makes the result stale.
             // Return the newer cache (or nothing), never the stale result.
-            let reply = enumerationCache?.items ?? []
+            let reply = enumerationCache?.snapshot ?? .empty
             let waiters = enumerationWaiters
             enumerationWaiters.removeAll()
             isEnumerating = false
@@ -442,34 +466,58 @@ enum HostedMenuBarBackend {
                     logger.debug("Hosted menu bar enumeration timed out for pid \(app.pid)")
                     continue applicationLoop
                 }
-                guard let frame = frame(of: element), frame.width > 0, frame.height > 0 else {
-                    continue
+                let frame: CGRect
+                switch frameRead(of: element) {
+                case .value(let value): frame = value
+                case .absent: continue
+                case .failed:
+                    result.removeSubrange(itemStartIndex..<result.endIndex)
+                    continue applicationLoop
                 }
+                guard frame.width > 0, frame.height > 0 else { continue }
                 guard Date.now < applicationDeadline else {
                     result.removeSubrange(itemStartIndex..<result.endIndex)
                     logger.debug("Hosted menu bar enumeration timed out for pid \(app.pid)")
                     continue applicationLoop
                 }
 
-                let identifier: String? = attribute(kAXIdentifierAttribute, of: element)
-                let identityStrings = [
-                    identifier,
-                    attribute(kAXTitleAttribute, of: element),
-                    attribute(kAXHelpAttribute, of: element),
-                    attribute(kAXDescriptionAttribute, of: element),
-                ]
-                .compactMap { (value: String?) -> String? in
-                    guard let value, !value.isEmpty else { return nil }
-                    return value
+                // Identity failures must not turn an existing icon into a new
+                // unidentified descriptor and prune the owner's prior snapshot.
+                var metadata = [String?]()
+                for name in [
+                    kAXIdentifierAttribute,
+                    kAXTitleAttribute,
+                    kAXHelpAttribute,
+                    kAXDescriptionAttribute,
+                    kAXRoleAttribute,
+                    kAXSubroleAttribute,
+                ] {
+                    guard Date.now < applicationDeadline else {
+                        result.removeSubrange(itemStartIndex..<result.endIndex)
+                        continue applicationLoop
+                    }
+                    switch attributeRead(name, of: element) as AttributeRead<String> {
+                    case .value(let value): metadata.append(value)
+                    case .absent: metadata.append(nil)
+                    case .failed:
+                        result.removeSubrange(itemStartIndex..<result.endIndex)
+                        continue applicationLoop
+                    }
                 }
+                let identifier = metadata[0]
+                let identityStrings = metadata.prefix(4)
+                    .compactMap { (value: String?) -> String? in
+                        guard let value, !value.isEmpty else { return nil }
+                        return value
+                    }
                 let title = identityStrings.first
                 guard Date.now < applicationDeadline else {
                     result.removeSubrange(itemStartIndex..<result.endIndex)
                     logger.debug("Hosted menu bar enumeration timed out for pid \(app.pid)")
                     continue applicationLoop
                 }
-                let role: String? = attribute(kAXRoleAttribute, of: element)
-                let subrole: String? = attribute(kAXSubroleAttribute, of: element)
+                let role = metadata[4]
+                let subrole = metadata[5]
                 let baseStableID = [
                     app.bundleIdentifier ?? "pid:\(app.pid)",
                     role ?? "",
@@ -526,20 +574,37 @@ enum HostedMenuBarBackend {
             return seen.insert(key).inserted
         }
         logger.debug("Discovered \(deduplicated.count) hosted menu bar items")
-        return EnumerationScan(items: deduplicated,
-                               scannedPIDs: scannedPIDs,
-                               livePIDs: Set(applications.map(\.pid)),
-                               nextCursor: nextCursor)
+        return EnumerationScan(
+            items: deduplicated,
+            scannedPIDs: scannedPIDs,
+            livePIDs: Set(applications.map(\.pid)),
+            nextCursor: nextCursor
+        )
     }
 
     static func frame(of element: AXUIElement) -> CGRect? {
+        guard case .value(let frame) = frameRead(of: element) else { return nil }
+        return frame
+    }
+
+    private static func frameRead(of element: AXUIElement) -> AttributeRead<CGRect> {
+        let positionValue: AXValue
+        let sizeValue: AXValue
+        switch attributeRead(kAXPositionAttribute, of: element) as AttributeRead<AXValue> {
+        case .value(let value): positionValue = value
+        case .absent: return .absent
+        case .failed(let error): return .failed(error)
+        }
+        switch attributeRead(kAXSizeAttribute, of: element) as AttributeRead<AXValue> {
+        case .value(let value): sizeValue = value
+        case .absent: return .absent
+        case .failed(let error): return .failed(error)
+        }
         guard
-            let positionValue: AXValue = attribute(kAXPositionAttribute, of: element),
-            let sizeValue: AXValue = attribute(kAXSizeAttribute, of: element),
             AXValueGetType(positionValue) == .cgPoint,
             AXValueGetType(sizeValue) == .cgSize
         else {
-            return nil
+            return .failed(.failure)
         }
         var position = CGPoint.zero
         var size = CGSize.zero
@@ -547,9 +612,9 @@ enum HostedMenuBarBackend {
             AXValueGetValue(positionValue, .cgPoint, &position),
             AXValueGetValue(sizeValue, .cgSize, &size)
         else {
-            return nil
+            return .failed(.failure)
         }
-        return CGRect(origin: position, size: size)
+        return .value(CGRect(origin: position, size: size))
     }
 
     /// Resolves an item's rendered frame from MenuBarAgent's accessibility
@@ -564,7 +629,19 @@ enum HostedMenuBarBackend {
     /// The actual occupied rectangles, including system items that have no
     /// corresponding source-app extra. Empty-space clicks need only this tree.
     static func renderedItemFrames(for sourcePID: pid_t? = nil) -> [CGRect] {
-        renderedItems().filter { sourcePID == nil || $0.pid == sourcePID }.map(\.frame)
+        renderedItemFrameSnapshot(for: sourcePID) ?? []
+    }
+
+    /// Nil means unknown/expired/failed, never a confirmed empty menu bar.
+    static func renderedItemFrameSnapshot(for sourcePID: pid_t? = nil) -> [CGRect]? {
+        renderedCache.requestRefresh { await loadRenderedItems() }
+        return renderedCache.value()?.filter { sourcePID == nil || $0.pid == sourcePID }.map(\.frame)
+    }
+
+    /// Explicit activations await a fresh scan; paint and event readers never do.
+    @MainActor
+    static func refreshRenderedSnapshot() async -> Bool {
+        await renderedCache.refresh(force: true) { await loadRenderedItems() } != nil
     }
 
     /// The system Clock stays visible under the macOS 27 visibility assertion,
@@ -575,9 +652,11 @@ enum HostedMenuBarBackend {
         }?.frame
     }
 
-    static func pressSystemClock(on displayID: CGDirectDisplayID) -> Bool {
+    @MainActor
+    static func pressSystemClock(on displayID: CGDirectDisplayID) async -> Bool {
+        guard await refreshRenderedSnapshot() else { return false }
         let displayBounds = CGDisplayBounds(displayID)
-        guard let clock = renderedItems(forceRefresh: true).first(where: {
+        guard let clock = renderedItems().first(where: {
             $0.identityStrings.contains("com.apple.menuextra.clock") &&
                 displayBounds.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY))
         }) else { return false }
@@ -587,7 +666,7 @@ enum HostedMenuBarBackend {
     static func renderedElement(for item: HostedMenuBarItemHandle) -> AXUIElement? {
         // A click must reacquire after any reflow rather than trusting a hover
         // snapshot. Ordinary layout reads share the short-lived snapshot below.
-        matchingRenderedItem(for: item, forceRefresh: true)?.element
+        matchingRenderedItem(for: item, forceRefresh: false)?.element
     }
 
     private static func matchingRenderedItem(for source: HostedMenuBarItemHandle, forceRefresh: Bool) -> RenderedItem? {
@@ -609,73 +688,102 @@ enum HostedMenuBarBackend {
     }
 
     private static func renderedItems(forceRefresh: Bool = false) -> [RenderedItem] {
-        enumerationLock.lock()
-        if !forceRefresh, let cached = renderedSnapshot,
-           Date.now.timeIntervalSince(cached.date) < renderedFrameCacheTTL {
-            enumerationLock.unlock()
-            return cached.items
-        }
-        if isReadingRenderedSnapshot {
-            let items = renderedSnapshot?.items ?? []
-            enumerationLock.unlock()
-            return items
-        }
-        isReadingRenderedSnapshot = true
-        let generation = cacheGeneration
-        enumerationLock.unlock()
+        renderedCache.requestRefresh(force: forceRefresh) { await loadRenderedItems() }
+        return renderedCache.value() ?? []
+    }
 
-        let items = readRenderedItems()
-        enumerationLock.lock()
-        let isCurrent = generation == cacheGeneration
-        if isCurrent { renderedSnapshot = (.now, items) }
-        isReadingRenderedSnapshot = false
-        enumerationLock.unlock()
-        return isCurrent ? items : []
+    private static func loadRenderedItems() async -> [RenderedItem]? {
+        let input = await MainActor.run { () -> (pid_t, [CGRect])? in
+            guard AXIsProcessTrusted(), let host = NSRunningApplication
+                    .runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first else { return nil }
+            return (host.processIdentifier, NSScreen.screens.map { CGDisplayBounds($0.displayID) })
+        }
+        guard let (pid, bounds) = input else {
+            logger.debug("Rendered menu bar host or Accessibility permission unavailable")
+            return nil
+        }
+        return await withCheckedContinuation { continuation in
+            renderedQueue.async {
+                continuation.resume(returning: readRenderedItems(hostPID: pid, displayBounds: bounds))
+            }
+        }
     }
 
     /// Walk MenuBarAgent once for every item in a layout/hit-test batch. Read
     /// each leaf's AX metadata once; matching individual owners is then in-memory.
-    private static func readRenderedItems() -> [RenderedItem] {
-        guard let host = NSRunningApplication
-            .runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first else { return [] }
-        let application = AXUIElementCreateApplication(host.processIdentifier)
-        AXUIElementSetMessagingTimeout(application, 0.15)
-        guard let windows: [AXUIElement] = attribute(kAXWindowsAttribute, of: application) else { return [] }
+    private static func readRenderedItems(hostPID: pid_t, displayBounds: [CGRect]) -> [RenderedItem]? {
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(500))
+        let application = AXUIElementCreateApplication(hostPID)
+        AXUIElementSetMessagingTimeout(application, 0.05)
+        guard let windows: [AXUIElement] = attribute(kAXWindowsAttribute, of: application) else {
+            logger.debug("Rendered menu bar window list unavailable")
+            return nil
+        }
         var remainingNodes = 512
         var visited = Set<AXUIElement>()
         var result = [RenderedItem]()
+        var complete = true
         func visit(_ element: AXUIElement, depth: Int) {
-            guard depth > 0, remainingNodes > 0, visited.insert(element).inserted else { return }
+            guard complete, visited.insert(element).inserted else { return }
+            guard depth > 0, remainingNodes > 0, ContinuousClock.now < deadline else {
+                logger.debug("Rendered menu bar scan reached its time, depth or node budget")
+                complete = false
+                return
+            }
             remainingNodes -= 1
-            let role: String? = attribute(kAXRoleAttribute, of: element)
+            AXUIElementSetMessagingTimeout(element, 0.05)
+            let role: String?
+            switch attributeRead(kAXRoleAttribute, of: element) as AttributeRead<String> {
+            case .value(let value): role = value
+            // MenuBarAgent uses role-less containers for the hosted extras.
+            // Their children still have actionable roles and must be visited.
+            case .absent: role = nil
+            case .failed(let error):
+                logger.debug("Rendered menu bar role read failed: \(error.rawValue)")
+                complete = false
+                return
+            }
             if role == kAXButtonRole as String || role == kAXMenuBarItemRole as String {
                 var pid: pid_t = 0
-                if AXUIElementGetPid(element, &pid) == .success,
-                   let frame = frame(of: element), isMenuBarFrame(frame) {
+                guard AXUIElementGetPid(element, &pid) == .success, let frame = frame(of: element) else {
+                    logger.debug("Rendered menu bar actionable element had unavailable geometry")
+                    complete = false
+                    return
+                }
+                if isMenuBarFrame(frame, displayBounds: displayBounds) {
                     let strings: [String?] = [
                         attribute(kAXIdentifierAttribute, of: element),
                         attribute(kAXTitleAttribute, of: element),
                         attribute(kAXHelpAttribute, of: element),
                         attribute(kAXDescriptionAttribute, of: element),
                     ]
-                    result.append(RenderedItem(element: element, pid: pid, frame: frame,
-                        identityStrings: Set(strings.compactMap { $0 }.filter { !$0.isEmpty })))
+                    result.append(RenderedItem(
+                        element: element,
+                        pid: pid,
+                        frame: frame,
+                        identityStrings: Set(strings.compactMap { $0 }.filter { !$0.isEmpty })
+                    ))
                 }
                 // Descending into a status button's open menu confuses its menu
                 // contents with the status item and adds synchronous AX traffic.
                 return
             }
-            if let children: [AXUIElement] = attribute(kAXChildrenAttribute, of: element) {
+            switch attributeRead(kAXChildrenAttribute, of: element) as AttributeRead<[AXUIElement]> {
+            case .value(let children):
                 for child in children { visit(child, depth: depth - 1) }
+            case .absent: break
+            case .failed(let error):
+                logger.debug("Rendered menu bar children read failed: \(error.rawValue)")
+                complete = false
             }
         }
         for window in windows { visit(window, depth: 12) }
-        return result
+        logger.debug("Rendered menu bar scan: \(windows.count) windows, \(visited.count) nodes, \(result.count) items, complete: \(complete)")
+        return complete && ContinuousClock.now < deadline ? result : nil
     }
 
-    private static func isMenuBarFrame(_ frame: CGRect) -> Bool {
-        frame.width > 0 && frame.height > 0 && NSScreen.screens.contains { screen in
-            let bounds = CGDisplayBounds(screen.displayID)
+    private static func isMenuBarFrame(_ frame: CGRect, displayBounds: [CGRect]) -> Bool {
+        frame.width > 0 && frame.height > 0 && displayBounds.contains { bounds in
             return frame.intersects(bounds) && frame.minY <= bounds.minY + 80
         }
     }
@@ -709,7 +817,7 @@ enum HostedMenuBarBackend {
             func finishRun() {
                 guard let start = runStart, let end = runEnd else { return }
                 let candidate = CGRect(x: start, y: bounds.minY, width: max(2, end - start + 2), height: NSStatusBar.system.thickness)
-                if candidate.width <= 300, bestFrame == nil || candidate.maxX > bestFrame!.maxX {
+                if candidate.width <= 300, bestFrame.map({ candidate.maxX > $0.maxX }) ?? true {
                     bestFrame = candidate
                 }
                 runStart = nil
@@ -756,7 +864,7 @@ enum HostedMenuBarBackend {
         cacheGeneration += 1
         expireEnumerationCacheLocked()
         hitFrameCache.removeAll()
-        renderedSnapshot = nil
+        renderedCache.invalidate()
         enumerationLock.unlock()
     }
 
@@ -764,7 +872,13 @@ enum HostedMenuBarBackend {
     /// can retain owners it has not yet reached. Generation checks still stop
     /// the pre-invalidation AX result from ever being published.
     private static func expireEnumerationCacheLocked() {
-        enumerationCache = enumerationCache.map { (date: .distantPast, items: $0.items) }
+        enumerationCache = enumerationCache.map {
+            (date: .distantPast, snapshot: DescriptorSnapshot(
+                items: $0.snapshot.items,
+                scannedPIDs: [],
+                concealedBundles: concealedBundleIdentifiers
+            ))
+        }
     }
 
     /// Invalidates the cached global hit-test frame for the given item.
@@ -778,7 +892,7 @@ enum HostedMenuBarBackend {
         let key = "\(pid)|\(title ?? "")"
         enumerationLock.lock()
         hitFrameCache.removeValue(forKey: key)
-        renderedSnapshot = nil
+        renderedCache.invalidate()
         enumerationLock.unlock()
     }
 
