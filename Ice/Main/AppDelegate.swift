@@ -84,6 +84,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    /// Opening Ice again (Finder, Spotlight, Launchpad) shows Settings. With
+    /// the Ice icon hidden this is the fallback way back into the app besides
+    /// right-clicking an empty area of the menu bar.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !isSecondaryInstance, appState?.isPreview == false else {
+            return true
+        }
+        if !flag {
+            openSettingsWindow()
+        }
+        return false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         appState?.menuBarManager.hostedItemVisibilityManager.restoreAll(stop: true)
     }

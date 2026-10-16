@@ -82,7 +82,7 @@ extension MenuBarItemManager {
                                 .first { hasRenderedSnapshot && $0.stableID == item.stableID && $0.isOnScreen }
                             try validate()
                             if let latest {
-                                try await self.click(item: latest, with: mouseButton)
+                                try await self.click(item: latest, with: mouseButton, preferPhysicalClick: true)
                                 return
                             }
                             try await Task.sleep(for: .milliseconds(150))

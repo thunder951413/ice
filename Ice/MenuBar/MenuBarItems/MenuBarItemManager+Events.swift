@@ -1055,14 +1055,19 @@ extension MenuBarItemManager {
 
 extension MenuBarItemManager {
     /// Clicks the given menu bar item with the given mouse button.
-    func click(item: MenuBarItem, with mouseButton: CGMouseButton) async throws {
+    ///
+    /// - Parameter preferPhysicalClick: Skips the Accessibility press for hosted
+    ///   items and posts a real mouse click at the item's frame. Used right after
+    ///   a hidden item was revealed, where AXPress is acknowledged but often does
+    ///   not open the item's menu.
+    func click(item: MenuBarItem, with mouseButton: CGMouseButton, preferPhysicalClick: Bool = false) async throws {
         if HostedItemVisibilityManager.isSupported, item.hostedHandle != nil {
             guard await HostedMenuBarBackend.refreshRenderedSnapshot() else {
                 throw EventError(code: .invalidItem, item: item)
             }
             try Task.checkCancellation()
         }
-        if mouseButton == .left, item.hostedHandle?.performPress() == true {
+        if mouseButton == .left, !preferPhysicalClick, item.hostedHandle?.performPress() == true {
             Logger.itemManager.debug("Pressed hosted \(item.logString) through Accessibility")
             return
         }
@@ -1181,6 +1186,9 @@ extension MenuBarItemManager {
             MouseCursor.warp(to: cursorLocation)
             MouseCursor.show()
         }
+        CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        try await Task.sleep(for: .milliseconds(20))
         down.post(tap: .cghidEventTap)
         try await Task.sleep(for: .milliseconds(20))
         up.post(tap: .cghidEventTap)
