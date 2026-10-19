@@ -1,35 +1,34 @@
-# Frequent Issues <!-- omit in toc -->
+# 常见问题
 
-- [Items are moved to the always-hidden section](#items-are-moved-to-the-always-hidden-section)
-- [Ice removed an item](#ice-removed-an-item)
-- [Ice does not remember the order of items](#ice-does-not-remember-the-order-of-items)
-- [How do I solve the `Ice cannot arrange menu bar items in automatically hidden menu bars` error?](#how-do-i-solve-the-ice-cannot-arrange-menu-bar-items-in-automatically-hidden-menu-bars-error)
+- [Ice 图标或隐藏的项目消失了](#ice-图标或隐藏的项目消失了)
+- [点击图标没有反应或提示无法打开](#点击图标没有反应或提示无法打开)
+- [找不到某个 Apple 系统菜单项（专注、隔空投送等）](#找不到某个-apple-系统菜单项)
+- [同一个应用的多个图标不能分开隐藏](#同一个应用的多个图标不能分开隐藏)
+- [启动后提示辅助功能权限](#启动后提示辅助功能权限)
+- [无法在“自动隐藏菜单栏”下使用 Ice Bar](#无法在自动隐藏菜单栏下使用-ice-bar)
 
-## Items are moved to the always-hidden section
+## Ice 图标或隐藏的项目消失了
 
-By default, macOS adds new items to the far left of the menu bar, which is also the location of Ice's always-hidden section. Most apps are configured
-to remember the positions of their items, but some are not. macOS treats the items of these apps as new items each time they appear. This results in
-these items appearing in the always-hidden section, even if they have been previously been moved.
+先在 **General → Menu bar recovery** 点 **Pause Hiding Menu Bar Items**，所有项目会临时显示；退出 Ice 也会释放限制。
 
-Ice does not currently manage individual items, and in fact cannot, as of the current release. Once issues
-[#6](https://github.com/jordanbaird/Ice/issues/6) and [#26](https://github.com/jordanbaird/Ice/issues/26) are implemented, Ice will be able to
-monitor the items in the menu bar, and move the ones it recognizes to their previous locations, even if macOS rearranges them.
+请从 `/Applications` 运行 Ice。macOS 27 上，从构建目录（如 `build/DerivedData`）运行的副本可能被系统连同其他项目一起隐藏。
 
-## Ice removed an item
+## 点击图标没有反应或提示无法打开
 
-Ice does not have the ability to move or remove items. It likely got placed in the always-hidden section by macOS. Option + click the Ice icon to show
-the always-hidden section, then Command + drag the item into a different section.
+Ice 会先临时显示该应用的菜单栏项目再触发点击。如果应用没有响应、已经退出或正在忙，会出现包含 **Try Again** 和 **Open App** 的提示。确认辅助功能权限仍然有效（**Advanced → Permissions**）。
 
-## Ice does not remember the order of items
+## 找不到某个 Apple 系统菜单项
 
-This is not a bug, but a missing feature. It is being tracked in [#26](https://github.com/jordanbaird/Ice/issues/26).
+macOS 27 的私有隐藏接口可能连带抑制部分 Apple 附加项。用 **Pause Hiding** 或退出 Ice 即可恢复访问。
 
-## How do I solve the `Ice cannot arrange menu bar items in automatically hidden menu bars` error?
+## 同一个应用的多个图标不能分开隐藏
 
-1. Open `System Settings` on your Mac
-2. Go to `Control Center`
-3. Select `Never` as shown in the image below
-4. Update your `Menu Bar Items` in `Ice`
-5. Return `Automatically hide and show the menu bar` to your preferred settings
+macOS 27 上，同一应用的菜单栏项目按应用整体管理，Menu Bar Layout 不支持逐项排序。需要精细排列时，在系统菜单栏中按住 Command 拖动。
 
-![Disable Menu Bar Hiding](https://github.com/user-attachments/assets/74c1fde6-d310-4fe3-9f2b-703d8ccb636a)
+## 启动后提示辅助功能权限
+
+Ice 需要辅助功能权限来读取并点击菜单栏项目。到“系统设置 → 隐私与安全性 → 辅助功能”允许 Ice。重新签名的新构建可能需要重新授权。屏幕录制权限在 macOS 27 上是可选的。
+
+## 无法在“自动隐藏菜单栏”下使用 Ice Bar
+
+Ice 无法为自动隐藏的菜单栏显示项目。到“系统设置 → 控制中心”，把“自动隐藏和显示菜单栏”改为“永不”。

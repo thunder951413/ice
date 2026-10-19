@@ -100,6 +100,10 @@ final class MenuBarItemManager: ObservableObject {
     /// The manager's menu bar item cache.
     @Published private(set) var itemCache = ItemCache()
 
+    /// A Boolean value that indicates whether at least one scan has produced a
+    /// cache. Lets the UI tell "still scanning" apart from "really empty".
+    @Published private(set) var hasCompletedInitialScan = false
+
     /// The shared app state.
     private(set) weak var appState: AppState?
 
@@ -464,6 +468,7 @@ extension MenuBarItemManager {
             "\($0.stableID)|\(NSStringFromRect($0.frame))|\($0.isOnScreen)"
         }
         if !cachedItemSignatures.isEmpty, cachedItemSignatures == itemSignatures {
+            hasCompletedInitialScan = true
             logSkippingCache(reason: "menu bar items have not changed")
             return
         }
@@ -491,6 +496,7 @@ extension MenuBarItemManager {
                 otherItems: items
             )
             cachedItemSignatures = itemSignatures
+            hasCompletedInitialScan = true
         } catch {
             Logger.itemManager.error("Error enforcing control item order: \(error)")
             Logger.itemManager.debug("Clearing menu bar item cache")

@@ -15,6 +15,7 @@ struct GeneralSettingsPane: View {
     @State private var isApplyingOffset = false
     @State private var tempItemSpacingOffset: CGFloat = 0 // Temporary state for the slider
     @State private var isConfirmingLayoutReset = false
+    @State private var isConfirmingSpacingApply = false
 
     private var manager: GeneralSettingsManager {
         appState.settingsManager.generalSettingsManager
@@ -101,6 +102,18 @@ struct GeneralSettingsPane: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This reveals all items, restores default spacing, and clears Ice's saved item arrangement.")
+        }
+        .confirmationDialog(
+            "Apply menu bar item spacing?",
+            isPresented: $isConfirmingSpacingApply,
+            titleVisibility: .visible
+        ) {
+            Button("Apply and Restart Apps") {
+                applyOffset()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Apps with menu bar items will be asked to quit and reopen.")
         }
     }
 
@@ -316,9 +329,9 @@ struct GeneralSettingsPane: View {
         }
 
         Button("Reset sizes") {
-            manager.iceBarIconSize = 28
-            manager.iceBarItemSpacing = 2
-            manager.iceBarPadding = 4
+            manager.iceBarIconSize = GeneralSettingsManager.defaultIceBarIconSize
+            manager.iceBarItemSpacing = GeneralSettingsManager.defaultIceBarItemSpacing
+            manager.iceBarPadding = GeneralSettingsManager.defaultIceBarPadding
         }
         .annotation("Adjust the Ice Bar's icon and background dimensions")
     }
@@ -361,7 +374,7 @@ struct GeneralSettingsPane: View {
         } label: {
             IceLabeledContent {
                 Button("Apply") {
-                    applyOffset()
+                    isConfirmingSpacingApply = true
                 }
                 .help("Apply the current spacing")
                 .disabled(isApplyingOffset || !hasSpacingSliderValueChanged)
@@ -497,7 +510,6 @@ struct GeneralSettingsPane: View {
     /// Reset menu bar spacing offset to default.
     private func resetOffsetToDefault() {
         tempItemSpacingOffset = 0
-        manager.itemSpacingOffset = tempItemSpacingOffset
-        applyOffset()
+        isConfirmingSpacingApply = true
     }
 }

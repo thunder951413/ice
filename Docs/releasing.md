@@ -21,7 +21,7 @@ ditto -c -k --sequesterRsrc --keepParent \
 ```
 
 Commit the source and push the current release branch before creating the tag.
-Do not overwrite unrelated `main` history. Prepare release notes in a file.
+Prepare release notes in a file.
 
 The `updates` branch is already initialized in this repository. For a new fork,
 initialize it once using your authenticated local account before the first
@@ -68,7 +68,7 @@ it against the existing tag without moving that tag:
 
 ```sh
 gh workflow run release.yml --repo thunder951413/ice \
-  --ref codex/macos27-compat -f tag=v0.12.1
+  --ref main -f tag=v0.12.1
 ```
 
 ## Public update channel

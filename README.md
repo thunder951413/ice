@@ -1,86 +1,94 @@
 <div align="center">
     <img src="Ice/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="160" height="160" alt="Ice">
-    <h1>Ice · macOS 27</h1>
-    <p>隐藏菜单栏图标，用紧凑的 Ice Bar 随时访问。</p>
+    <h1>Ice</h1>
+    <p>为 macOS 27 重新设计的菜单栏管理器：隐藏菜单栏图标，用紧凑的 Ice Bar 随时取用。</p>
 </div>
 
 [![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/thunder951413/ice/releases/latest)
-![Platform](https://img.shields.io/badge/macOS-14%2B-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/macOS-14%2B%20·%20optimized%20for%2027-blue?style=flat-square)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
 
-这是 [jordanbaird/Ice](https://github.com/jordanbaird/Ice) 的个人维护分支，增加了 macOS 27 菜单栏适配，并改进 Ice Bar 的外观、尺寸与交互。下载和自动更新均使用 **[thunder951413/ice](https://github.com/thunder951413/ice)**，与原项目的发布渠道独立。
+macOS 27 改用 MenuBarAgent 托管状态栏图标，以往靠“超宽分隔符”把图标挤出屏幕的做法已经失效。Ice 针对这套新机制重写了发现、隐藏和点击链路，并围绕它重新设计了 Ice Bar 与设置页面。macOS 26 及更早版本继续使用经典的分隔符方式。
 
 ## 安装
 
-1. 从本仓库的 [最新 Release](https://github.com/thunder951413/ice/releases/latest) 下载 `Ice.zip`。
-2. 退出正在运行的 Ice，将解压后的 `Ice.app` 放到 `/Applications`，替换旧版本。
-3. 从“应用程序”启动 Ice，并按应用提示授予辅助功能权限。
+1. 从 [最新 Release](https://github.com/thunder951413/ice/releases/latest) 下载 `Ice.zip`。
+2. 退出正在运行的 Ice，把解压出的 `Ice.app` 放到 `/Applications`。
+3. 从“应用程序”启动，按提示授予**辅助功能**权限。
 
-请从正式安装位置运行。macOS 27 上，从构建目录运行的副本可能被系统隐藏机制连同其他项目一起隐藏；本机已确认正式安装副本的 Ice 菜单栏图标可以保留。
+请从 `/Applications` 运行。macOS 27 上，从构建目录运行的副本可能被系统连同其他项目一起隐藏。
 
-当前发行包在本机使用 Apple Development 证书签名，**未经 Apple 公证**。系统可能要求通过“系统设置 → 隐私与安全性”确认打开。无需关闭 Gatekeeper。原项目的 Homebrew cask 安装的是上游版本，不会安装这个分支。
+发行包使用 Apple Development 证书签名，**未经 Apple 公证**。首次打开如被拦截，到“系统设置 → 隐私与安全性”确认即可，无需关闭 Gatekeeper。Homebrew cask 安装的是其他项目，不是这个版本。
 
-## 主要功能
+## 功能
 
-- **真实隐藏菜单栏项目**：macOS 27 使用新的系统菜单栏托管接口，隐藏后释放原位置。
-- **原生 Ice 图标**：在 General 中通过 Show Ice icon 和 Ice icon 选择显示状态及样式；点击图标或菜单栏空白区域展开。
-- **应用菜单不误触**：点击“文件／编辑”等菜单及标题间隙不会触发展开；无法确认菜单范围时保留应用自身点击行为。
-- **紧凑 Ice Bar**：独立浅色／深色背景、磨砂或实色样式、圆角与阴影。
-- **可调尺寸**：General → Use Ice Bar 下设置 Icon size、Icon spacing、Background padding；支持保存和 Reset sizes。
-- **常用操作**：Escape 收起，方向键选择，Return／空格打开；右键 Bar 的背景可搜索、打开设置或暂停隐藏。右键应用图标保留该应用的次要操作。
-- **分区管理**：Visible、Hidden、Always-Hidden；自动收起、快捷键和登录启动。
-- **可关闭搜索**：General → Enable menu bar search。关闭后隐藏菜单栏搜索入口并释放搜索快捷键，保留快捷键配置；Ice 的搜索仅用于菜单栏图标。
-- **无损暂停**：Pause Hiding 临时显示所有项目，Resume Hiding 恢复原分区；Reset Menu Bar Layout 是单独的确认操作。
-- **响应与恢复**：串行后台扫描菜单栏，合并重复请求并限制扫描时间；搜索先显示再刷新。隐藏切换保留旧状态直到新状态生效，支持超时、重试和权限恢复。
+**隐藏与访问**
+- **真正释放菜单栏空间**：macOS 27 上使用系统托管接口隐藏项目，隐藏后原位置腾出。
+- **三个分区**：Visible、Hidden、Always-Hidden，支持自动收起、快捷键和登录启动。
+- **Ice Bar**：点击 Ice 图标或菜单栏空白处，在菜单栏下方展开一条紧凑的浮层，里面是被隐藏的项目。
+- **应用菜单不误触**：点击“文件／编辑”等应用菜单及其间隙不会展开；无法确认菜单范围时，保留应用自身的点击行为。
 
-默认图标为 **28 pt**，项目热区间距 **2 pt**，背景上下留白 **4 pt**，可见背景高度约 **40 pt**。尺寸范围分别为 16–36、0–12、2–12 pt。
+**Ice Bar 交互**
+- 左键图标：临时显示并触发该应用，右键图标：触发该应用自己的右键菜单。
+- 右键 Bar 的空白背景：搜索菜单栏项目、打开布局或设置、暂停隐藏、关闭 Bar。
+- 键盘：方向键选择，Return／空格打开，Escape 关闭。
+- 浅色／深色、磨砂或实色背景，圆角与阴影；开启“降低透明度”时自动改用实色。
+- 尺寸可调：Icon size 16–36 pt（默认 28）、Icon spacing 0–12 pt（默认 2）、Background padding 2–12 pt（默认 4），可一键 Reset sizes。
 
-若登录启动提示等待系统允许，点击 **Open Login Item Settings**，在“系统设置 → 通用 → 登录项与扩展”的后台 App 活动中允许 Ice。返回应用时开关会同步系统状态；注册失败会显示错误原因。
+**搜索**
+- 全局快捷键打开菜单栏项目搜索，模糊匹配，上下选择，回车触发；先显示结果，再在后台刷新。
+- 不需要时可在 General 中关闭，同时释放该快捷键并保留其配置。
 
-## macOS 27 使用说明
+**布局与恢复**
+- Menu Bar Layout 中点击或右键应用图标，选择它所属的分区。
+- **暂停隐藏**会临时显示全部项目，恢复时回到原分区；**重置菜单栏布局**是单独的、需确认的操作。
+- 隐藏切换在新状态生效前保留旧状态，支持超时、重试和权限恢复；运行期间撤销权限会自动释放限制，重新授权后恢复。
 
-在 **Menu Bar Layout** 中点击或右键一个应用图标，为它选择所属分区。macOS 27 上同一应用的菜单栏项目按应用一起管理；布局页不支持逐项拖动排序，可在系统菜单栏中使用 Command 拖动。
+**外观**
+- 菜单栏自定义外观：纯色、渐变、分隔线、圆角形状、阴影与边框。
 
-该路径使用所属应用的图标预览，屏幕录制权限为可选。系统菜单栏图标不能任意隐藏，部分 Apple 菜单附加项可能受系统限制影响；Pause Hiding 或退出 Ice 可以恢复访问。
+## macOS 27 说明
 
-最低构建目标仍为 macOS 14。本轮实机验收在 macOS 27 / Apple Silicon 完成，通用包包含 arm64 和 x86_64；旧系统、Intel 实机、多屏热插拔、睡眠唤醒和所有全屏组合未完成运行验证。macOS 27 的隐藏实现依赖私有接口，系统更新可能改变行为。
+- 在 Menu Bar Layout 中，**同一应用的所有菜单栏项目一起管理**，不支持逐项排序；需要精细排列时，在系统菜单栏中按住 Command 拖动。
+- 预览使用所属应用的图标，**屏幕录制权限是可选的**。
+- 部分 Apple 菜单附加项（如专注模式、隔空投送）可能受系统限制；遇到时用“暂停隐藏”或退出 Ice 即可恢复。
+- 隐藏功能依赖私有接口，系统更新可能改变其行为。接口缺失或启用失败时，图标保持可见，并在 Menu Bar Layout 中提示原因。
+- 最低构建目标为 macOS 14，通用包含 arm64 与 x86_64。实机验收在 macOS 27 / Apple Silicon 上完成；旧系统、Intel、多屏热插拔、睡眠唤醒和各种全屏组合尚未逐一验证。
 
-详见 [兼容性与验证记录](Docs/macOS-27.md) 和 [Bartender 功能对照](Docs/Bartender-comparison.md)。Profiles、条件 Triggers、独立 Spacers、Widgets 和剪贴板历史尚未实现。
+详见 [macOS 27 兼容性记录](Docs/macOS-27.md)。
 
 ## 自动更新
 
-Sparkle 更新源来自本仓库 `updates` 分支的 `appcast.xml`，更新包来自本仓库 GitHub Releases。发行包使用本分支独立的 **Ed25519 签名**，不再信任或检查原作者的更新源。
+使用 Sparkle。更新清单位于本仓库 `updates` 分支的 `appcast.xml`，安装包来自 GitHub Releases，使用独立的 Ed25519 签名校验，**无需 GitHub 令牌**。请不要删除或改写 `updates` 分支，否则已安装的版本将无法检查更新。
 
-本仓库为公开仓库。0.12.1 起使用公开静态更新清单和 Release 下载地址，**无需 GitHub 令牌**，避免匿名 API 额度耗尽导致更新失败。旧版本保存的钥匙串记录不会被读取或发送。
+## 构建与测试
 
-若 0.12.0 的检查更新提示网络错误，请手动安装 0.12.1 一次，之后即可使用新更新通道。
-
-从旧上游版本切换到本分支时，请先手动安装一次本仓库发行包，以切换更新源与签名公钥。仅修改网址无法让旧版本接受新的签名。
-
-## 构建与验证
-
-使用 Xcode 27 构建当前 macOS 27 适配：
+需要 Xcode 27。
 
 ```sh
-./Scripts/build-local.sh -quiet
-CONFIGURATION=Release ./Scripts/build-local.sh -quiet
-./Scripts/test-regressions.sh
-# 需要 macOS 27 和运行终端的辅助功能权限；只读，不点击或隐藏应用
-./Scripts/test-hosted-snapshot.sh
-# 先退出 Ice；该测试仅操作临时测试应用
-./Scripts/test-hosted-visibility.sh
+./Scripts/build-local.sh -quiet                       # Debug 构建
+CONFIGURATION=Release ./Scripts/build-local.sh -quiet # Release 构建
+./Scripts/test-regressions.sh                         # 策略回归、发布包校验、桥接编译、Ice Bar 渲染
 ```
 
-`build-local.sh` 自动使用本机 Apple Development 证书；没有证书时构建未签名版本。输出位于 `build/DerivedData`。CompactSlider 1.1.6 已保留许可证并随仓库提供，包含 Xcode 27 所需的重载消歧修正。
+`build-local.sh` 优先使用本机 Apple Development 证书，没有则构建未签名版本，产物在 `build/DerivedData`（该目录体积较大，已被 git 忽略，可随时删除）。
 
-原生测试默认检查三轮隐藏／恢复；`ICE_TEST_ALLOWLIST=1` 可启用临时应用的严格允许列表诊断，该诊断在当前系统上仍有已知失败，不能等同于正式安装副本的测试。
+需要 macOS 27 与辅助功能权限的实机测试（只读快照、隐藏／恢复）见 `Scripts/test-hosted-*.sh`。CI 在推送到 `main` 时运行 SwiftLint、发布脚本测试、逻辑测试与 Debug 构建。
 
-`test-regressions.sh` 汇总十二组策略回归、发布包校验测试、原生桥接编译和四种 Ice Bar 表面渲染。CI 也使用该入口，Swift、Objective-C 桥接、项目与测试脚本变更都会触发检查。只读快照测试另行验证真实 MenuBarAgent 的后台读取与完整扫描结果，不在没有辅助功能权限的 CI 环境中执行。
+## 文档
 
-发布流程与签名说明见 [发布指南](Docs/releasing.md)。GitHub Actions 校验已准备的发行包、签名和版本，再发布 Release 与更新源；Apple 签名私钥无需上传 GitHub。
+- [macOS 27 兼容性记录](Docs/macOS-27.md)
+- [发布指南](Docs/releasing.md)
+- [与 Bartender 的功能对照](Docs/Bartender-comparison.md)
+- [质量复查记录](Docs/quality-review-2026-09-19.md)
+- [常见问题](FREQUENT_ISSUES.md)
 
-## 来源与许可证
+## 尚未实现
 
-- 原始项目：[jordanbaird/Ice](https://github.com/jordanbaird/Ice)。保留原作者及贡献者版权。
-- macOS 27 可见性桥接参考 [Thaw](https://github.com/thaw-app/Thaw) 的 GPL-3.0 实现，并在相应源文件中保留归属。
-- 本项目遵循 [GPL-3.0](LICENSE)。依赖库保留各自许可证。
+Profiles、条件 Triggers、独立 Spacers、Widgets 和剪贴板历史。
+
+## 致谢与许可证
+
+Ice 起源于 [Jordan Baird 的 Ice](https://github.com/jordanbaird/Ice)，保留原作者及贡献者的版权。macOS 27 的可见性桥接参考了 [Thaw](https://github.com/thaw-app/Thaw) 的 GPL-3.0 实现，并在相应源文件中保留归属。
+
+本项目遵循 [GPL-3.0](LICENSE)，依赖库保留各自许可证。

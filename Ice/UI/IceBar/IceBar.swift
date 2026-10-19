@@ -109,6 +109,15 @@ final class IceBarPanel: NSPanel {
             }
             .store(in: &c)
 
+        // Close the panel when the user clicks elsewhere.
+        NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification, object: self)
+            .delay(for: .milliseconds(100), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, isVisible, !isKeyWindow else { return }
+                close()
+            }
+            .store(in: &c)
+
         cancellables = c
     }
 
@@ -198,7 +207,15 @@ final class IceBarPanel: NSPanel {
 
         updateOrigin(for: screen)
 
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        alphaValue = reduceMotion ? 1 : 0
         makeKeyAndOrderFront(nil)
+        if !reduceMotion {
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0.12
+            animator().alphaValue = 1
+            NSAnimationContext.endGrouping()
+        }
         escapeMonitor.start()
         DispatchQueue.main.async { [weak self, weak hostingView] in
             guard self?.isKeyWindow == true else { return }
@@ -289,6 +306,7 @@ private struct IceBarContentView: View {
     @EnvironmentObject var menuBarManager: MenuBarManager
     @State private var frame = CGRect.zero
     @State private var scrollIndicatorsFlashTrigger = 0
+    @State private var loadingTimedOut = false
 
     let screen: NSScreen
     let section: MenuBarSection.Name
@@ -344,6 +362,15 @@ private struct IceBarContentView: View {
         if menuBarManager.isMenuBarHiddenBySystemUserDefaults {
             Text("Ice cannot display menu bar items for automatically hidden menu bars")
                 .padding(.horizontal, 10)
+        } else if items.isEmpty, !itemManager.hasCompletedInitialScan, !loadingTimedOut {
+            ProgressView()
+                .controlSize(.small)
+                .padding(.horizontal, 12)
+                .accessibilityLabel("Scanning menu bar items")
+                .task {
+                    try? await Task.sleep(for: .seconds(3))
+                    loadingTimedOut = true
+                }
         } else if items.isEmpty {
             Text("No items in \(section.displayString)")
                 .font(.callout)
@@ -394,7 +421,7 @@ private struct IceBarItemView: View {
             }
             closePanel()
             Task {
-                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+                await Task.yield()
                 itemManager.tempShowItem(item, clickWhenFinished: true, mouseButton: .left)
             }
         }
@@ -407,7 +434,7 @@ private struct IceBarItemView: View {
             }
             closePanel()
             Task {
-                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+                await Task.yield()
                 itemManager.tempShowItem(item, clickWhenFinished: true, mouseButton: .right)
             }
         }
@@ -465,7 +492,7 @@ private struct IceBarItemView: View {
         )
         .contentShape(Rectangle())
         .background {
-            if usesHostedAppIcon && isHovered {
+            if isHovered {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(.primary.opacity(0.12))
                     .padding(2)
@@ -480,6 +507,10 @@ private struct IceBarItemView: View {
 }
 
 // MARK: - IceBarItemClickView
+
+private func iceBarTooltip(for item: MenuBarItem) -> String {
+    "\(item.displayName)\nClick to open · Right-click for its context menu"
+}
 
 private struct IceBarItemClickView: NSViewRepresentable {
     private final class Represented: NSView {
@@ -499,7 +530,7 @@ private struct IceBarItemClickView: NSViewRepresentable {
             self.leftClickAction = leftClickAction
             self.rightClickAction = rightClickAction
             super.init(frame: .zero)
-            self.toolTip = item.displayName
+            self.toolTip = iceBarTooltip(for: item)
             self.focusRingType = .default
         }
 
@@ -584,7 +615,7 @@ private struct IceBarItemClickView: NSViewRepresentable {
         }
 
         override func accessibilityHelp() -> String? {
-            "Press to open. Secondary click for more options."
+            "Press to open. Right-click to open the app’s own context menu."
         }
 
         override func accessibilityPerformPress() -> Bool {
@@ -592,8 +623,15 @@ private struct IceBarItemClickView: NSViewRepresentable {
             return true
         }
 
+        // Never show the Ice Bar's own context menu over an item: a secondary
+        // click on an item is forwarded to the real menu bar item instead.
+        // (AppKit's default `rightMouseDown` walks up the view hierarchy and
+        // pops up the SwiftUI `.contextMenu` attached to the bar.)
+        override func menu(for event: NSEvent) -> NSMenu? {
+            nil
+        }
+
         override func rightMouseDown(with event: NSEvent) {
-            super.rightMouseDown(with: event)
             lastRightMouseDownDate = .now
             lastRightMouseDownLocation = NSEvent.mouseLocation
         }
@@ -610,7 +648,6 @@ private struct IceBarItemClickView: NSViewRepresentable {
         }
 
         override func rightMouseUp(with event: NSEvent) {
-            super.rightMouseUp(with: event)
             guard
                 Date.now.timeIntervalSince(lastRightMouseDownDate) < 0.5,
                 absoluteDistance(lastRightMouseDownLocation, NSEvent.mouseLocation) < 5
@@ -635,6 +672,6 @@ private struct IceBarItemClickView: NSViewRepresentable {
         view.item = item
         view.leftClickAction = leftClickAction
         view.rightClickAction = rightClickAction
-        view.toolTip = item.displayName
+        view.toolTip = iceBarTooltip(for: item)
     }
 }

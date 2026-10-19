@@ -73,9 +73,14 @@ extension MenuBarItemManager {
                     try await appState.menuBarManager.hostedItemVisibilityManager.withTemporarilyRevealedItem(item) { validate in
                         guard clickWhenFinished else { return }
                         let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+                        var attempt = 0
                         repeat {
                             try validate()
-                            let descriptors = await HostedMenuBarBackend.refreshEnumeration(force: true)
+                            // The item already exists in the descriptor cache; only the
+                            // rendered frames (refreshed below) change when it is revealed.
+                            // Force a full scan only if the first, cheap attempt misses.
+                            let descriptors = await HostedMenuBarBackend.refreshEnumeration(force: attempt > 0)
+                            attempt += 1
                             let hasRenderedSnapshot = await HostedMenuBarBackend.refreshRenderedSnapshot()
                             let latest = descriptors
                                 .map(MenuBarItem.init(hostedHandle:))

@@ -8,6 +8,11 @@ import Foundation
 
 @MainActor
 final class GeneralSettingsManager: ObservableObject {
+    /// Default Ice Bar dimensions, in points.
+    static let defaultIceBarIconSize: Double = 28
+    static let defaultIceBarItemSpacing: Double = 2
+    static let defaultIceBarPadding: Double = 4
+
     /// A Boolean value that indicates whether the Ice icon
     /// should be shown.
     @Published var showIceIcon = true
@@ -37,13 +42,13 @@ final class GeneralSettingsManager: ObservableObject {
     @Published var iceBarStyle: IceBarStyle = .frosted
 
     /// The size of icons in the Ice Bar.
-    @Published var iceBarIconSize: Double = 28
+    @Published var iceBarIconSize: Double = GeneralSettingsManager.defaultIceBarIconSize
 
     /// The spacing between icons in the Ice Bar.
-    @Published var iceBarItemSpacing: Double = 2
+    @Published var iceBarItemSpacing: Double = GeneralSettingsManager.defaultIceBarItemSpacing
 
     /// The padding around the Ice Bar background.
-    @Published var iceBarPadding: Double = 4
+    @Published var iceBarPadding: Double = GeneralSettingsManager.defaultIceBarPadding
 
     /// A Boolean value that indicates whether the hidden section
     /// should be shown when the mouse pointer clicks in an empty
@@ -138,13 +143,13 @@ final class GeneralSettingsManager: ObservableObject {
 
     private func loadIceBarSizingPreferences() {
         Defaults.ifPresent(key: .iceBarIconSize) { (value: Double) in
-            iceBarIconSize = clampedIceBarValue(value, in: 16...36, defaultValue: 28)
+            iceBarIconSize = clampedIceBarValue(value, in: 16...36, defaultValue: Self.defaultIceBarIconSize)
         }
         Defaults.ifPresent(key: .iceBarItemSpacing) { (value: Double) in
-            iceBarItemSpacing = clampedIceBarValue(value, in: 0...12, defaultValue: 2)
+            iceBarItemSpacing = clampedIceBarValue(value, in: 0...12, defaultValue: Self.defaultIceBarItemSpacing)
         }
         Defaults.ifPresent(key: .iceBarPadding) { (value: Double) in
-            iceBarPadding = clampedIceBarValue(value, in: 2...12, defaultValue: 4)
+            iceBarPadding = clampedIceBarValue(value, in: 2...12, defaultValue: Self.defaultIceBarPadding)
         }
     }
 

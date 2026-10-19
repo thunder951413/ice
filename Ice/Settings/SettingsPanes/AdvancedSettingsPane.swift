@@ -111,7 +111,14 @@ struct AdvancedSettingsPane: View {
                     maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
                 }
         }
-        .annotation("The amount of time to wait before showing on hover")
+        .disabled(!appState.settingsManager.generalSettingsManager.showOnHover)
+        .annotation {
+            if appState.settingsManager.generalSettingsManager.showOnHover {
+                Text("The amount of time to wait before showing on hover")
+            } else {
+                Text("Turn on “Show on hover” in General settings to use this delay")
+            }
+        }
     }
 
     @ViewBuilder
@@ -124,14 +131,14 @@ struct AdvancedSettingsPane: View {
                 step: 1
             )
         } label: {
-            Text("Temporarily shown item delay")
+            Text("Rehide delay after opening an item")
                 .frame(minHeight: .compactSliderMinHeight)
                 .frame(minWidth: maxSliderLabelWidth, alignment: .leading)
                 .onFrameChange { frame in
                     maxSliderLabelWidth = max(maxSliderLabelWidth, frame.width)
                 }
         }
-        .annotation("The amount of time to wait before hiding temporarily shown menu bar items")
+        .annotation("How long an item stays revealed after you open it from the Ice Bar or search, before it is hidden again")
     }
 
     @ViewBuilder
