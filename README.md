@@ -79,7 +79,6 @@ CONFIGURATION=Release ./Scripts/build-local.sh -quiet # Release 构建
 
 - [macOS 27 兼容性记录](Docs/macOS-27.md)
 - [发布指南](Docs/releasing.md)
-- [与 Bartender 的功能对照](Docs/Bartender-comparison.md)
 - [质量复查记录](Docs/quality-review-2026-09-19.md)
 - [常见问题](FREQUENT_ISSUES.md)
 

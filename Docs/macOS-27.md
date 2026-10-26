@@ -176,8 +176,7 @@ Validation on 2026-09-19:
   enabled and the selected Bar style is Solid.
 
 System Reduce Transparency/Increase Contrast and long overflow lists were not
-runtime-tested. See [Bartender comparison](Bartender-comparison.md) for the
-official-source feature matrix and remaining gaps.
+runtime-tested.
 
 ## Compact Bar sizing follow-up
 
