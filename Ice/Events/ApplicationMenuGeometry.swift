@@ -43,8 +43,14 @@ enum ApplicationMenuGeometry {
         at point: CGPoint, applicationMenuFrame: CGRect?, itemFrames: [CGRect]?, displayBounds: CGRect
     ) -> Bool {
         guard isEmptySpace(at: point, applicationMenuFrame: applicationMenuFrame), let itemFrames else { return false }
-        return !itemFrames.contains {
-            $0.intersects(displayBounds) && point.x >= $0.minX - 2 && point.x <= $0.maxX + 2
+        let onDisplay = itemFrames.filter { $0.intersects(displayBounds) }
+        if let trailingMaxX = onDisplay.map(\.maxX).max(),
+           displayBounds.maxX - trailingMaxX <= 32,
+           point.x >= trailingMaxX - 2 {
+            return false
+        }
+        return !onDisplay.contains {
+            point.x >= $0.minX - 2 && point.x <= $0.maxX + 2
         }
     }
 }

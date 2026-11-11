@@ -708,22 +708,33 @@ enum HostedMenuBarBackend {
     }
 
     /// The system Clock stays visible under the macOS 27 visibility assertion,
-    /// but its native click cannot open Notification Center while it is held.
-    static func systemClockFrame(at point: CGPoint) -> CGRect? {
-        renderedItems().first {
-            $0.identityStrings.contains("com.apple.menuextra.clock") && $0.frame.contains(point)
-        }?.frame
+    /// but its native click cannot open Notification Center while the assertion is held.
+    static func systemClockFrame(at point: CGPoint, allowingStale: Bool = false) -> CGRect? {
+        for item in renderedItems(allowingStale: allowingStale)
+        where item.identityStrings.contains("com.apple.menuextra.clock") {
+            let displayBounds = CGDisplayBounds(item.displayID)
+            let minX = item.frame.minX - 4
+            let maxX = displayBounds.maxX - item.frame.maxX <= 32 ? displayBounds.maxX : item.frame.maxX + 4
+            let minY = min(displayBounds.minY, item.frame.minY)
+            let hitRect = CGRect(
+                x: minX,
+                y: minY,
+                width: max(0, maxX - minX),
+                height: max(item.frame.maxY - minY + 6, 40)
+            )
+            if hitRect.contains(point) {
+                return item.frame
+            }
+        }
+        return nil
     }
 
-    @MainActor
-    static func pressSystemClock(on displayID: CGDirectDisplayID) async -> Bool {
-        guard await refreshRenderedSnapshot() else { return false }
+    static func systemClockFrame(on displayID: CGDirectDisplayID) -> CGRect? {
         let displayBounds = CGDisplayBounds(displayID)
-        guard let clock = renderedItems().first(where: {
+        return renderedItems(allowingStale: true).first {
             $0.identityStrings.contains("com.apple.menuextra.clock") &&
                 displayBounds.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY))
-        }) else { return false }
-        return press(clock.element)
+        }?.frame
     }
 
     static func renderedElement(for item: HostedMenuBarItemHandle) -> AXUIElement? {

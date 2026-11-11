@@ -7,7 +7,7 @@ import CoreGraphics
 import Foundation
 
 /// Tracks Notification Center or Calendar popover visibility while the clock
-/// activation bridge is active on macOS 27.0–27.1.
+/// activation bridge is active on macOS 27+.
 struct ClockPanelVisibilitySession {
     struct SystemWindowSnapshot {
         let id: CGWindowID
@@ -32,11 +32,11 @@ struct ClockPanelVisibilitySession {
     private var appeared = false
     private var missingSince: Duration?
 
-    /// macOS 27.2+ opens both Date (Calendar) and Time (Notification Center)
-    /// natively while `MBAssessmentModeAssertion` is held; running the bridge
-    /// on 27.2+ would press Clock a second time and close the newly opened panel.
+    /// `MBAssessmentModeAssertion` suppresses Notification Center and Calendar
+    /// from opening on macOS 27.x (including 27.2), so clicking Date/Clock
+    /// requires releasing the assertion until the panel closes.
     static func requiresActivationBridge(operatingSystemVersion version: OperatingSystemVersion) -> Bool {
-        version.majorVersion == 27 && version.minorVersion < 2
+        version.majorVersion >= 27
     }
 
     mutating func observe(isOpen: Bool, elapsed: Duration) -> Decision {
@@ -94,7 +94,7 @@ struct ClockPanelVisibilitySession {
     /// including newly ordered-in popover windows from `MenuBarAgent` or `ControlCenter`.
     static func isClockPanelOpen(
         windows: [SystemWindowSnapshot],
-        baselineWindowIDs: Set<CGWindowID>,
+        baselineWindowIDs: Set<CGWindowID> = [],
         floatingLayerMinimum: Int,
         displayBounds: [CGRect]
     ) -> Bool {

@@ -5,6 +5,12 @@ import Foundation
 enum ClockPanelVisibilitySessionTests {
     static func main() {
         expect(
+            !ClockPanelVisibilitySession.requiresActivationBridge(
+                operatingSystemVersion: OperatingSystemVersion(majorVersion: 26, minorVersion: 4, patchVersion: 0)
+            ),
+            "macOS 26 does not use the macOS 27+ clock activation bridge"
+        )
+        expect(
             ClockPanelVisibilitySession.requiresActivationBridge(
                 operatingSystemVersion: OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0)
             ),
@@ -12,21 +18,15 @@ enum ClockPanelVisibilitySessionTests {
         )
         expect(
             ClockPanelVisibilitySession.requiresActivationBridge(
-                operatingSystemVersion: OperatingSystemVersion(majorVersion: 27, minorVersion: 1, patchVersion: 3)
-            ),
-            "macOS 27.1 needs the clock activation bridge"
-        )
-        expect(
-            !ClockPanelVisibilitySession.requiresActivationBridge(
                 operatingSystemVersion: OperatingSystemVersion(majorVersion: 27, minorVersion: 2, patchVersion: 0)
             ),
-            "macOS 27.2 opens Date/Calendar and Notification Center natively without re-pressing Clock"
+            "macOS 27.2 still suppresses Notification Center while MBAssessmentModeAssertion is active"
         )
         expect(
-            !ClockPanelVisibilitySession.requiresActivationBridge(
+            ClockPanelVisibilitySession.requiresActivationBridge(
                 operatingSystemVersion: OperatingSystemVersion(majorVersion: 28, minorVersion: 0, patchVersion: 0)
             ),
-            "macOS 28+ must not run the 27.0–27.1 clock activation bridge"
+            "macOS 28+ keeps the native-first check before releasing MBAssessmentModeAssertion"
         )
 
         var longSession = ClockPanelVisibilitySession()

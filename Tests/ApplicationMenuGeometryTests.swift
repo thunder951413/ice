@@ -28,6 +28,8 @@ enum ApplicationMenuGeometryTests {
         expect(!empty(998, [icon]), "the icon edge margin must stay protected")
         expect(empty(900, [icon]), "verified space between application menus and status items must remain usable")
         expect(!empty(200, [icon]), "application menu titles must remain protected")
+        let clock = CGRect(x: 1360, y: 0, width: 132, height: 33)
+        expect(!empty(1505, [icon, clock]), "trailing screen-corner margin past the Clock must stay protected")
     }
 
     private static func testAppleMenuTitlesAndGapsAreProtected() {

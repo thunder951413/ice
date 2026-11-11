@@ -60,14 +60,14 @@ Show All or quitting restores access. Third-party icons from one application
 cannot be hidden independently. Previews use the owning application icon, not a live image of a concealed
 status item.
 
-The visibility assertion prevents the system Clock from opening Notification
-Center only on early macOS 27.0–27.1 builds. On macOS 27.2+, both Date (Calendar
-popover) and Time (Notification Center) open natively while the assertion is
-held, so `ClockPanelVisibilitySession.requiresActivationBridge` disables the
-clock activation bridge completely on macOS 27.2+ to avoid a second synthetic
-Clock press retracting the Calendar popover. On macOS 27.0–27.1, Ice releases
-the assertion only when neither Notification Center nor the Calendar popover
-appears natively, and restores the saved hidden layout once the panel closes.
+`MBAssessmentModeAssertion` suppresses `com.apple.notificationcenterui` from
+opening when clicking the menu bar Date/Clock (`com.apple.menuextra.clock`) on
+macOS 27.x (including 27.2). When a Clock click does not open Notification
+Center natively within 80 ms, Ice temporarily releases the assertion, clicks
+the rendered Clock coordinate via `CGEvent` (instead of `AXPress`, which fires
+both open and close ~80 ms apart on macOS 27.2), clears any blocked
+`ControlCenter` `SimpleMenuAnchor` session if needed, and keeps the assertion
+released until Notification Center / Calendar is confirmed closed.
 
 ## macOS 27+ Exclusive Overhaul (2026-11-11)
 

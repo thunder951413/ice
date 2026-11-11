@@ -12,10 +12,11 @@ final class EventManager {
     /// The shared app state.
     private weak var appState: AppState?
 
-    /// A native Clock click needs a short assertion-free interval only on macOS 27.0–27.1.
+    /// A native Clock click needs an assertion-free interval while Notification Center / Calendar is open.
     private var clockMouseDownPoint: CGPoint?
     private var clockBaselineWindowIDs = Set<CGWindowID>()
     private var clockActivationTask: Task<Void, Never>?
+    private var isSynthesizingClockClick = false
 
     private var menuBarWindowFrameCache: (displayID: CGDirectDisplayID, date: ContinuousClock.Instant, frame: CGRect?)?
 
@@ -25,7 +26,7 @@ final class EventManager {
     private(set) lazy var mouseDownMonitor = UniversalEventMonitor(
         mask: [.leftMouseDown, .rightMouseDown]
     ) { [weak self] event in
-        guard let self else {
+        guard let self, !isSynthesizingClockClick else {
             return event
         }
         switch event.type {
@@ -45,7 +46,10 @@ final class EventManager {
     private(set) lazy var mouseUpMonitor = UniversalEventMonitor(
         mask: .leftMouseUp
     ) { [weak self] event in
-        self?.handleClockMouseUp(with: event)
+        guard let self, !isSynthesizingClockClick else {
+            return event
+        }
+        handleClockMouseUp(with: event)
         return event
     }
 
@@ -73,6 +77,7 @@ final class EventManager {
         clockActivationTask = nil
         clockMouseDownPoint = nil
         clockBaselineWindowIDs.removeAll()
+        isSynthesizingClockClick = false
         for monitor in allMonitors {
             monitor.stop()
         }
@@ -250,7 +255,7 @@ extension EventManager {
         )
     }
 
-    // MARK: Handle System Clock (macOS 27.0–27.1 Only)
+    // MARK: Handle System Clock (macOS 27+)
 
     private func handleClockMouseDown(with event: NSEvent) {
         clockMouseDownPoint = nil
@@ -260,8 +265,8 @@ extension EventManager {
             appState.menuBarManager.hostedItemVisibilityManager.needsClockActivationBridge,
             clockActivationTask == nil,
             event.modifierFlags.isDisjoint(with: [.command, .control, .option]),
-            isMouseInsideMenuBar,
-            let location = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics
+            let location = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics,
+            isMouseInsideMenuBar || Self.isPointInMenuBarBand(location)
         else {
             return
         }
@@ -287,7 +292,9 @@ extension EventManager {
             let appState,
             let location = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics,
             hypot(location.x - downPoint.x, location.y - downPoint.y) <= 6,
-            let screen = NSScreen.screens.first(where: { CGDisplayBounds($0.displayID).contains(location) })
+            let screen = NSScreen.screens.first(where: {
+                CGDisplayBounds($0.displayID).insetBy(dx: -2, dy: -2).contains(location)
+            })
         else {
             return
         }
@@ -296,41 +303,48 @@ extension EventManager {
         clockActivationTask = Task { @MainActor [weak self] in
             defer { self?.clockActivationTask = nil }
             guard
-                await !Self.waitForClockPanel(baselineWindowIDs: baselineIDs, within: .milliseconds(500)),
+                await !Self.waitForClockPanel(baselineWindowIDs: baselineIDs, within: .milliseconds(80)),
                 !Task.isCancelled
             else {
                 return
             }
-            if HostedMenuBarBackend.renderedItemFrameSnapshot() == nil {
+            if HostedMenuBarBackend.systemClockFrame(at: downPoint) == nil {
                 guard await HostedMenuBarBackend.refreshRenderedSnapshot() else {
                     return
                 }
             }
             guard
-                let frame = HostedMenuBarBackend.systemClockFrame(at: downPoint),
-                frame.insetBy(dx: -4, dy: -4).contains(location),
+                let initialClockFrame = HostedMenuBarBackend.systemClockFrame(at: downPoint, allowingStale: true),
+                HostedMenuBarBackend.systemClockFrame(at: location, allowingStale: true) != nil,
                 visibility.beginClockActivationBridge()
             else {
                 return
             }
             defer { visibility.endClockActivationBridge() }
+            appState.menuBarManager.iceBarPanel.close()
 
-            try? await Task.sleep(for: .milliseconds(150))
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
 
-            var didActivate = false
-            for _ in 0..<10 {
+            var didActivate = Self.isClockPanelOpen(baselineWindowIDs: baselineIDs)
+            for attempt in 0..<3 where !didActivate {
                 guard !Task.isCancelled else {
                     return
                 }
+                _ = await HostedMenuBarBackend.refreshRenderedSnapshot()
                 if Self.isClockPanelOpen(baselineWindowIDs: baselineIDs) {
                     didActivate = true
                     break
                 }
-                if await HostedMenuBarBackend.pressSystemClock(on: screen.displayID) {
+                let clockFrame = HostedMenuBarBackend.systemClockFrame(on: screen.displayID) ?? initialClockFrame
+                let clickPoint = CGPoint(x: clockFrame.midX, y: clockFrame.midY)
+                guard await self?.postSyntheticClockClick(at: clickPoint) == true else {
+                    break
+                }
+                let waitBudget: Duration = attempt == 0 ? .milliseconds(160) : .milliseconds(320)
+                if await Self.waitForClockPanel(baselineWindowIDs: baselineIDs, within: waitBudget) {
                     didActivate = true
                     break
                 }
-                try? await Task.sleep(for: .milliseconds(100))
             }
             guard didActivate else {
                 return
@@ -353,13 +367,62 @@ extension EventManager {
         }
     }
 
+    /// Clicks the rendered Clock by screen coordinate rather than `AXPress`.
+    /// On macOS 27.2, `AXPress` on `com.apple.menuextra.clock` fires both open
+    /// and close ~80ms apart, immediately dismissing Notification Center / Calendar.
+    private func postSyntheticClockClick(at point: CGPoint) async -> Bool {
+        guard
+            let source = CGEventSource(stateID: .hidSystemState),
+            let cursorLocation = MouseCursor.locationCoreGraphics,
+            let down = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseDown,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ),
+            let up = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseUp,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            )
+        else {
+            return false
+        }
+        down.setIntegerValueField(.mouseEventClickState, value: 1)
+        up.setIntegerValueField(.mouseEventClickState, value: 1)
+
+        isSynthesizingClockClick = true
+        MouseCursor.hide()
+        defer {
+            MouseCursor.warp(to: cursorLocation)
+            MouseCursor.show()
+            isSynthesizingClockClick = false
+        }
+        CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        do { try await Task.sleep(for: .milliseconds(15)) } catch { return false }
+        down.post(tap: .cghidEventTap)
+        try? await Task.sleep(for: .milliseconds(20))
+        up.post(tap: .cghidEventTap)
+        try? await Task.sleep(for: .milliseconds(25))
+        return !Task.isCancelled
+    }
+
+    private static func isPointInMenuBarBand(_ point: CGPoint) -> Bool {
+        NSScreen.screens.contains { screen in
+            let bounds = CGDisplayBounds(screen.displayID).insetBy(dx: -2, dy: -2)
+            return bounds.contains(point) && point.y <= bounds.minY + 52
+        }
+    }
+
     private static func waitForClockPanel(
         baselineWindowIDs: Set<CGWindowID>,
         within timeout: Duration
     ) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         repeat {
-            do { try await Task.sleep(for: .milliseconds(50)) } catch { return false }
+            do { try await Task.sleep(for: .milliseconds(40)) } catch { return false }
             if isClockPanelOpen(baselineWindowIDs: baselineWindowIDs) {
                 return true
             }
@@ -367,7 +430,7 @@ extension EventManager {
         return false
     }
 
-    private static func isClockPanelOpen(baselineWindowIDs: Set<CGWindowID>? = nil) -> Bool {
+    private static func isClockPanelOpen(baselineWindowIDs: Set<CGWindowID> = []) -> Bool {
         let displayBounds = NSScreen.screens.map { CGDisplayBounds($0.displayID) }
         let floatingLayer = Int(CGWindowLevelForKey(.floatingWindow))
         let windows = WindowInfo.getOnScreenWindows().map { window in
@@ -382,7 +445,7 @@ extension EventManager {
         }
         return ClockPanelVisibilitySession.isClockPanelOpen(
             windows: windows,
-            baselineWindowIDs: baselineWindowIDs ?? Set(windows.map(\.id)),
+            baselineWindowIDs: baselineWindowIDs,
             floatingLayerMinimum: floatingLayer,
             displayBounds: displayBounds
         )
