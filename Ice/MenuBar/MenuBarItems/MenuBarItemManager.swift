@@ -231,22 +231,13 @@ final class MenuBarItemManager: ObservableObject {
             }
             .store(in: &c)
 
-        // On hosted menu bars we no longer synthesize physical divider drags.
-        // Draining/reposting AppKit's tracking queue can swallow the mouse-up
-        // that finishes a settings click or an NSDraggingSession on macOS 27.
-        let mouseEvents: AnyPublisher<NSEvent, Never>
-        if HostedItemVisibilityManager.isSupported {
-            // Mouse-move timing only gates the synthetic drag paths, which are
-            // not used on hosted menu bars. Do not wake for every pointer move.
-            mouseEvents = UniversalEventMonitor.publisher(for: mouseTrackingMask.subtracting(.mouseMoved))
-                .eraseToAnyPublisher()
-        } else {
-            mouseEvents = Publishers.Merge(
+        // On hosted menu bars we never synthesize physical divider drags or
+        // enforce control item order, so do not install global mouse monitors.
+        if !HostedItemVisibilityManager.isSupported {
+            Publishers.Merge(
                 UniversalEventMonitor.publisher(for: mouseTrackingMask),
                 RunLoopLocalEventMonitor.publisher(for: mouseTrackingMask, mode: .eventTracking)
-            ).eraseToAnyPublisher()
-        }
-        mouseEvents
+            )
             .sink { [weak self] event in
                 guard let self else {
                     return
@@ -263,6 +254,7 @@ final class MenuBarItemManager: ObservableObject {
                 }
             }
             .store(in: &c)
+        }
 
         cancellables = c
     }
@@ -427,6 +419,7 @@ extension MenuBarItemManager {
                 scannedPIDs: snapshot.scannedPIDs,
                 concealedBundles: snapshot.concealedBundles
             )
+            hasCompletedInitialScan = true
             return
         }
         do {

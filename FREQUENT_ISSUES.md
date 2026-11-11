@@ -9,7 +9,7 @@
 
 ## Ice 图标或隐藏的项目消失了
 
-先在 **General → Menu bar recovery** 点 **Pause Hiding Menu Bar Items**，所有项目会临时显示；退出 Ice 也会释放限制。
+先右键 Ice 图标、菜单栏空白处或 Ice Bar 背景选择 **Pause Hiding Menu Bar Items**，或在 **General → Menu bar recovery** 点 **Pause Hiding Menu Bar Items**，所有项目会临时显示且保留原分区；若布局异常可点 **Reset Menu Bar Layout…**；退出 Ice 也会释放限制。
 
 请从 `/Applications` 运行 Ice。macOS 27 上，从构建目录（如 `build/DerivedData`）运行的副本可能被系统连同其他项目一起隐藏。
 

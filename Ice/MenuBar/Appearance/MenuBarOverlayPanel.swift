@@ -25,6 +25,7 @@ final class MenuBarOverlayPanel: NSPanel {
     }
 
     /// A context that manages panel update tasks.
+    @MainActor
     private final class UpdateTaskContext {
         private var tasks = [UpdateFlag: Task<Void, any Error>]()
 
@@ -36,9 +37,13 @@ final class MenuBarOverlayPanel: NSPanel {
         ///   - flag: The update flag to set the task for.
         ///   - timeout: The timeout of the task.
         ///   - operation: The operation for the task to perform.
-        func setTask(for flag: UpdateFlag, timeout: Duration, operation: @escaping () async throws -> Void) {
+        func setTask(
+            for flag: UpdateFlag,
+            timeout: Duration,
+            operation: @escaping @MainActor @Sendable () async throws -> Void
+        ) {
             cancelTask(for: flag)
-            tasks[flag] = Task.detached(timeout: timeout) {
+            tasks[flag] = Task(timeout: timeout) {
                 try await operation()
             }
         }
@@ -48,6 +53,14 @@ final class MenuBarOverlayPanel: NSPanel {
         /// - Parameter flag: The update flag to cancel the task for.
         func cancelTask(for flag: UpdateFlag) {
             tasks.removeValue(forKey: flag)?.cancel()
+        }
+
+        /// Cancels all active update tasks.
+        func cancelAll() {
+            for task in tasks.values {
+                task.cancel()
+            }
+            tasks.removeAll()
         }
     }
 
@@ -118,9 +131,11 @@ final class MenuBarOverlayPanel: NSPanel {
                 guard let self else {
                     return
                 }
-                updateTaskContext.setTask(for: .desktopWallpaper, timeout: .seconds(5)) {
+                contentView?.needsDisplay = true
+                updateTaskContext.setTask(for: .desktopWallpaper, timeout: .seconds(5)) { [weak self] in
                     while true {
                         try Task.checkCancellation()
+                        guard let self else { return }
                         self.insertUpdateFlag(.desktopWallpaper)
                         try await Task.sleep(for: .seconds(1))
                     }
@@ -146,13 +161,14 @@ final class MenuBarOverlayPanel: NSPanel {
                 return
             }
             let displayID = owningScreen.displayID
-            updateTaskContext.setTask(for: .applicationMenuFrame, timeout: .seconds(10)) {
+            updateTaskContext.setTask(for: .applicationMenuFrame, timeout: .seconds(10)) { [weak self, weak appState] in
                 // Each read is a synchronous AX walk on the main actor. The new
                 // app's menu usually appears within a few hundred milliseconds,
                 // so back off instead of re-reading every millisecond.
                 var delay = Duration.milliseconds(25)
                 while true {
                     try Task.checkCancellation()
+                    guard let self, let appState else { return }
                     if let latestFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID, maxAge: .zero),
                        latestFrame != self.applicationMenuFrame {
                         self.insertUpdateFlag(.applicationMenuFrame)
@@ -164,8 +180,9 @@ final class MenuBarOverlayPanel: NSPanel {
                     try await Task.sleep(for: delay)
                 }
             }
-            Task {
+            Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(100))
+                guard let self else { return }
                 if self.owningScreen != NSScreen.main {
                     self.updateTaskContext.cancelTask(for: .applicationMenuFrame)
                 }
@@ -260,6 +277,12 @@ final class MenuBarOverlayPanel: NSPanel {
     /// Inserts the given update flag into the panel's current list of update flags.
     private func insertUpdateFlag(_ flag: UpdateFlag) {
         updateFlags.insert(flag)
+    }
+
+    override func close() {
+        updateTaskContext.cancelAll()
+        cancellables.removeAll()
+        super.close()
     }
 
     /// Performs validation for the given validation kind. Returns the panel's
@@ -591,14 +614,25 @@ private final class MenuBarOverlayPanelContentView: NSView {
             return CGRect(x: rect.minX, y: rect.minY, width: maxX, height: rect.height)
         }()
         let trailingPathBounds: CGRect = {
-            let items = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: false)
-            guard !items.isEmpty else {
-                return .zero
+            var position: CGFloat
+            if HostedItemVisibilityManager.isSupported {
+                let displayBounds = CGDisplayBounds(screen.displayID)
+                let frames = HostedMenuBarBackend.renderedItemFrames()
+                    .filter { $0.intersects(displayBounds) }
+                guard let leftmostX = frames.map(\.minX).min() else {
+                    return .zero
+                }
+                position = leftmostX - displayBounds.minX
+            } else {
+                let items = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: false)
+                guard !items.isEmpty else {
+                    return .zero
+                }
+                let totalWidth = items.reduce(into: 0) { width, item in
+                    width += item.frame.width
+                }
+                position = rect.maxX - totalWidth
             }
-            let totalWidth = items.reduce(into: 0) { width, item in
-                width += item.frame.width
-            }
-            var position = rect.maxX - totalWidth
             if shouldInset {
                 position += 4
                 if info.trailing.trailingEndCap == .square {
@@ -606,6 +640,10 @@ private final class MenuBarOverlayPanelContentView: NSView {
                 }
             } else {
                 position -= 7
+            }
+            position = position.clamped(to: rect.minX...rect.maxX)
+            guard rect.maxX > position else {
+                return .zero
             }
             return CGRect(x: position, y: rect.minY, width: rect.maxX - position, height: rect.height)
         }()
@@ -776,24 +814,9 @@ private final class MenuBarOverlayPanelContentView: NSView {
                     context.restoreGraphicsState()
                 }
 
-                let borderPath = switch fullConfiguration.shapeKind {
-                case .none:
-                    NSBezierPath(rect: drawableBounds)
-                case .full:
-                    pathForFullShape(
-                        in: drawableBounds,
-                        info: fullConfiguration.fullShapeInfo,
-                        isInset: fullConfiguration.isInset,
-                        screen: overlayPanel.owningScreen
-                    )
-                case .split:
-                    pathForSplitShape(
-                        in: drawableBounds,
-                        info: fullConfiguration.splitShapeInfo,
-                        isInset: fullConfiguration.isInset,
-                        screen: overlayPanel.owningScreen
-                    )
-                }
+                // Reuse the already-computed `shapePath` instead of rebuilding
+                // split/full geometry a second time during the same paint pass.
+                let borderPath = (shapePath.copy() as? NSBezierPath) ?? shapePath
 
                 // HACK: Insetting a path to get an "inside" stroke is surprisingly
                 // difficult. We can fake the correct line width by doubling it, as

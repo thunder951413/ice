@@ -160,6 +160,12 @@ struct PermissionsView: View {
                     permission.performRequest()
                     Task {
                         await permission.waitForPermission()
+                        guard
+                            permission.hasPermission,
+                            !appState.hasPerformedSetup
+                        else {
+                            return
+                        }
                         appState.activate(withPolicy: .regular)
                         openWindow(id: Constants.permissionsWindowID)
                     }

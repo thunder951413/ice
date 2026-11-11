@@ -8,8 +8,6 @@ import SwiftUI
 
 @MainActor
 final class HotkeyRecorderModel: ObservableObject {
-    @EnvironmentObject private var appState: AppState
-
     @Published private(set) var isRecording = false
 
     @Published var isPresentingReservedByMacOSError = false
@@ -78,6 +76,11 @@ final class HotkeyRecorderModel: ObservableObject {
         guard !keyCombination.isReservedBySystem else {
             isPresentingReservedByMacOSError = true
             return
+        }
+        if let hotkeys = hotkey.appState?.settingsManager.hotkeySettingsManager.hotkeys {
+            for other in hotkeys where other !== hotkey && other.keyCombination == keyCombination {
+                other.keyCombination = nil
+            }
         }
         hotkey.keyCombination = keyCombination
         stopRecording()

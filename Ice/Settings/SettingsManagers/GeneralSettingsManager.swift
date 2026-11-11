@@ -108,10 +108,14 @@ final class GeneralSettingsManager: ObservableObject {
         Defaults.ifPresent(key: .showOnClick, assign: &showOnClick)
         Defaults.ifPresent(key: .showOnHover, assign: &showOnHover)
         Defaults.ifPresent(key: .showOnScroll, assign: &showOnScroll)
-        Defaults.ifPresent(key: .itemSpacingOffset, assign: &itemSpacingOffset)
+        Defaults.ifPresent(key: .itemSpacingOffset) { (value: Double) in
+            itemSpacingOffset = clampedValue(value, in: -16...16, defaultValue: 0)
+        }
         loadIceBarSizingPreferences()
         Defaults.ifPresent(key: .autoRehide, assign: &autoRehide)
-        Defaults.ifPresent(key: .rehideInterval, assign: &rehideInterval)
+        Defaults.ifPresent(key: .rehideInterval) { (value: TimeInterval) in
+            rehideInterval = clampedValue(value, in: 0...30, defaultValue: 15)
+        }
 
         Defaults.ifPresent(key: .iceBarLocation) { rawValue in
             if let location = IceBarLocation(rawValue: rawValue) {
@@ -143,17 +147,17 @@ final class GeneralSettingsManager: ObservableObject {
 
     private func loadIceBarSizingPreferences() {
         Defaults.ifPresent(key: .iceBarIconSize) { (value: Double) in
-            iceBarIconSize = clampedIceBarValue(value, in: 16...36, defaultValue: Self.defaultIceBarIconSize)
+            iceBarIconSize = clampedValue(value, in: 16...36, defaultValue: Self.defaultIceBarIconSize)
         }
         Defaults.ifPresent(key: .iceBarItemSpacing) { (value: Double) in
-            iceBarItemSpacing = clampedIceBarValue(value, in: 0...12, defaultValue: Self.defaultIceBarItemSpacing)
+            iceBarItemSpacing = clampedValue(value, in: 0...12, defaultValue: Self.defaultIceBarItemSpacing)
         }
         Defaults.ifPresent(key: .iceBarPadding) { (value: Double) in
-            iceBarPadding = clampedIceBarValue(value, in: 2...12, defaultValue: Self.defaultIceBarPadding)
+            iceBarPadding = clampedValue(value, in: 2...12, defaultValue: Self.defaultIceBarPadding)
         }
     }
 
-    private func clampedIceBarValue(
+    private func clampedValue(
         _ value: Double,
         in range: ClosedRange<Double>,
         defaultValue: Double
@@ -297,9 +301,10 @@ final class GeneralSettingsManager: ObservableObject {
 
         $itemSpacingOffset
             .receive(on: DispatchQueue.main)
-            .sink { [weak appState] offset in
-                Defaults.set(offset, forKey: .itemSpacingOffset)
-                appState?.spacingManager.offset = Int(offset)
+            .sink { [weak self, weak appState] offset in
+                let sanitized = self?.clampedValue(offset, in: -16...16, defaultValue: 0) ?? 0
+                Defaults.set(sanitized, forKey: .itemSpacingOffset)
+                appState?.spacingManager.offset = Int(sanitized)
             }
             .store(in: &c)
 

@@ -291,10 +291,10 @@ private struct CustomGradientPickerHandle: View {
                         }
                     }
                 }
-                .onKeyDown(key: .escape) {
+                .onKeyDown(key: .escape, isEnabled: selectedStop == stop) {
                     selectedStop = nil
                 }
-                .onKeyDown(key: .delete) {
+                .onKeyDown(key: .delete, isEnabled: selectedStop == stop) {
                     deleteSelectedStop()
                 }
         }

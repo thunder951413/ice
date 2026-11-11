@@ -8,7 +8,7 @@ import Combine
 /// A combination of a key and modifiers that can be used to
 /// trigger actions on system-wide key-up or key-down events.
 final class Hotkey: ObservableObject {
-    private weak var appState: AppState?
+    private(set) weak var appState: AppState?
 
     private var listener: Listener?
     private var registrationAllowed = true

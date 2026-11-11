@@ -230,10 +230,18 @@ extension EventManager {
                 }
             case .toggleAlwaysHidden:
                 if let alwaysHiddenSection = appState.menuBarManager.section(withName: .alwaysHidden) {
+                    if appState.settingsManager.generalSettingsManager.showOnHover,
+                       !appState.settingsManager.generalSettingsManager.useIceBar {
+                        appState.preventShowOnHover()
+                    }
                     alwaysHiddenSection.toggle()
                 }
             case .toggleHidden:
                 if let hiddenSection = appState.menuBarManager.section(withName: .hidden) {
+                    if appState.settingsManager.generalSettingsManager.showOnHover,
+                       !appState.settingsManager.generalSettingsManager.useIceBar {
+                        appState.preventShowOnHover()
+                    }
                     hiddenSection.toggle()
                 }
             }
@@ -290,12 +298,19 @@ extension EventManager {
                 return
             }
 
-            // Get the window that the user has clicked into.
+            // Get the window that the user has clicked into. Window titles are
+            // redacted when Screen Recording permission is not granted, so do
+            // not require a non-empty title here.
             guard
                 let mouseLocation = MouseCursor.locationCoreGraphics,
                 let windowUnderMouse = WindowInfo.getOnScreenWindows(excludeDesktopWindows: false)
                     .filter({ $0.layer < CGWindowLevelForKey(.cursorWindow) })
-                    .first(where: { $0.frame.contains(mouseLocation) && $0.title?.isEmpty == false }),
+                    .first(where: {
+                        $0.frame.contains(mouseLocation) &&
+                            $0.alpha > 0 &&
+                            $0.windowID != kCGNullWindowID &&
+                            !$0.isWindowServerWindow
+                    }),
                 let owningApplication = windowUnderMouse.owningApplication
             else {
                 return
@@ -374,7 +389,8 @@ extension EventManager {
             let appState,
             appState.settingsManager.generalSettingsManager.showOnHover,
             !appState.settingsManager.generalSettingsManager.useIceBar,
-            isMouseInsideMenuBar
+            isMouseInsideMenuBar,
+            !isMouseInsideNotch
         else {
             return
         }
@@ -397,13 +413,10 @@ extension EventManager {
                 break
             }
         } else if !isMouseInsideApplicationMenu {
-            // We have a left or right click that is inside the menu bar, outside
-            // a menu bar item, and outside the application menu, so it _must_ be
-            // inside an empty menu bar space. Only suppress hover when that click
-            // shows or keeps showing sections: the reset lives in `hide()`, which
-            // never runs if nothing was shown, and hover would stay disabled.
-            let anySectionVisible = appState.menuBarManager.sections.contains { !$0.isHidden }
-            if anySectionVisible || appState.settingsManager.generalSettingsManager.showOnClick {
+            // Suppress hover while sections are already visible; empty-space
+            // clicks that toggle a section arm `preventShowOnHover()` once
+            // `handleShowOnClick` confirms an actual section toggle.
+            if appState.menuBarManager.sections.contains(where: { !$0.isHidden }) {
                 appState.preventShowOnHover()
             }
         }
@@ -432,6 +445,9 @@ extension EventManager {
         else { return }
         if HostedMenuBarBackend.renderedItemFrameSnapshot() != nil,
            HostedMenuBarBackend.systemClockFrame(at: location) == nil { return }
+        // If Notification Center is already open, this click closes it natively;
+        // running the activation bridge afterwards would immediately reopen it.
+        guard !Self.isNotificationCenterOpen() else { return }
         clockMouseDownPoint = location
     }
 
@@ -447,10 +463,12 @@ extension EventManager {
         let visibility = appState.menuBarManager.hostedItemVisibilityManager
         clockActivationTask = Task { @MainActor [weak self] in
             defer { self?.clockActivationTask = nil }
-            // Let the native click finish first. This also avoids toggling an
-            // already-open panel if a later macOS release fixes this behavior.
-            try? await Task.sleep(for: .milliseconds(100))
-            guard !Task.isCancelled, !Self.isNotificationCenterOpen() else { return }
+            // Let the native click finish first. macOS 27.2 can open the panel
+            // natively under the assertion, and the panel may take a few hundred
+            // milliseconds to order in. Pressing Clock then would close it again.
+            guard await !Self.waitForNotificationCenter(within: .milliseconds(500)),
+                  !Task.isCancelled
+            else { return }
             if HostedMenuBarBackend.renderedItemFrameSnapshot() == nil {
                 guard await HostedMenuBarBackend.refreshRenderedSnapshot() else { return }
             }
@@ -466,7 +484,8 @@ extension EventManager {
 
             var didPress = false
             for _ in 0..<10 {
-                guard !Task.isCancelled else { return }
+                // A late native opening must not be toggled closed by our press.
+                guard !Task.isCancelled, !Self.isNotificationCenterOpen() else { return }
                 if await HostedMenuBarBackend.pressSystemClock(on: screen.displayID) {
                     didPress = true
                     break
@@ -490,23 +509,28 @@ extension EventManager {
         }
     }
 
+    private static func waitForNotificationCenter(within timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        repeat {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return false }
+            if isNotificationCenterOpen() { return true }
+        } while ContinuousClock.now < deadline
+        return false
+    }
+
     private static func isNotificationCenterOpen() -> Bool {
         let pids = Set(NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.apple.notificationcenterui"
         ).map(\.processIdentifier))
         guard !pids.isEmpty else { return false }
+        let displayBounds = NSScreen.screens.map { CGDisplayBounds($0.displayID) }
         return WindowInfo.getOnScreenWindows().contains { window in
             guard pids.contains(window.ownerPID) else { return false }
-            if window.title == "Notification Center" { return true }
-            // Window titles can be redacted without Screen Recording access.
-            // The panel itself covers a display, unlike notification banners.
-            return NSScreen.screens.contains { screen in
-                let bounds = CGDisplayBounds(screen.displayID)
-                return abs(window.frame.minX - bounds.minX) < 2 &&
-                    abs(window.frame.minY - bounds.minY) < 2 &&
-                    window.frame.width >= bounds.width * 0.8 &&
-                    window.frame.height >= bounds.height * 0.8
-            }
+            return ClockPanelVisibilitySession.isNotificationCenterWindow(
+                title: window.title,
+                frame: window.frame,
+                displayBounds: displayBounds
+            )
         }
     }
 
@@ -550,11 +574,16 @@ extension EventManager {
         }
 
         // Make sure the "ShowOnHover" feature is enabled and not prevented.
-        guard
-            appState.settingsManager.generalSettingsManager.showOnHover,
-            !appState.isShowOnHoverPrevented
-        else {
+        guard appState.settingsManager.generalSettingsManager.showOnHover else {
             return
+        }
+        if appState.isShowOnHoverPrevented {
+            if !isMouseInsideMenuBar,
+               appState.menuBarManager.sections.allSatisfy(\.isHidden) {
+                appState.allowShowOnHover()
+            } else {
+                return
+            }
         }
 
         // Only continue if we have a hidden section (we should).
@@ -660,11 +689,13 @@ extension EventManager {
             return
         }
 
-        let averageDelta = (event.scrollingDeltaX + event.scrollingDeltaY) / 2
+        let dominantDelta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+            ? event.scrollingDeltaX
+            : event.scrollingDeltaY
 
-        if averageDelta > 5 {
+        if dominantDelta > 5 {
             hiddenSection.show()
-        } else if averageDelta < -5 {
+        } else if dominantDelta < -5 {
             hiddenSection.hide()
         }
     }
@@ -798,6 +829,9 @@ extension EventManager {
             return false
         }
         let panel = appState.menuBarManager.iceBarPanel
+        guard panel.isVisible else {
+            return false
+        }
         // Pad the frame to be more forgiving if the user accidentally
         // moves their mouse outside of the Ice Bar.
         let paddedFrame = panel.frame.insetBy(dx: -10, dy: -10)
@@ -815,16 +849,16 @@ extension EventManager {
         }
 
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
-            guard
-                let screen = bestScreen,
-                let frame = HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier).first
-            else {
+            guard let screen = bestScreen else {
                 return false
             }
             let displayBounds = CGDisplayBounds(screen.displayID)
-            return frame.intersects(displayBounds) &&
-                mouseLocation.x >= frame.minX - 2 &&
-                mouseLocation.x <= frame.maxX + 2
+            let frames = HostedMenuBarBackend.renderedItemFrames(for: ProcessInfo.processInfo.processIdentifier)
+            return frames.contains { frame in
+                frame.intersects(displayBounds) &&
+                    mouseLocation.x >= frame.minX - 2 &&
+                    mouseLocation.x <= frame.maxX + 2
+            }
         }
 
         guard

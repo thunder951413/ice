@@ -50,7 +50,8 @@ def main():
     ET.SubElement(item, 'pubDate').text = format_datetime(datetime.now(timezone.utc), usegmt=True)
     ET.SubElement(item, f'{{{SPARKLE}}}version').text = build
     ET.SubElement(item, f'{{{SPARKLE}}}shortVersionString').text = version
-    ET.SubElement(item, f'{{{SPARKLE}}}minimumSystemVersion').text = '14.0'
+    minimum_system_version = str(info.get('LSMinimumSystemVersion', '14.0')).strip() or '14.0'
+    ET.SubElement(item, f'{{{SPARKLE}}}minimumSystemVersion').text = minimum_system_version
     # Inline release notes avoid forwarding update credentials to another host.
     ET.SubElement(item, 'description').text = 'See the GitHub Release for changes and compatibility notes.'
     ET.SubElement(item, 'enclosure', {

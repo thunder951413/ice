@@ -1,9 +1,9 @@
 #!/bin/zsh
 set -euo pipefail
 root=${0:A:h:h}
-output=${1:-/tmp/ice-bar-surface-test}
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
+output=${1:-"$temporary/out"}
 xcrun swiftc -parse-as-library \
     "$root/Ice/UI/IceBar/IceBarStyle.swift" \
     "$root/Ice/UI/IceBar/IceBarSurface.swift" \

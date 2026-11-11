@@ -3,9 +3,16 @@
 
 from __future__ import annotations
 
+import argparse
+import base64
+import hashlib
 import importlib.util
+import plistlib
+import struct
+import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -55,6 +62,145 @@ class ReleaseVerifierTests(unittest.TestCase):
 """)
         with self.assertRaisesRegex(verify_release.VerificationError, "edSignature"):
             verify_release.appcast_metadata(path)
+
+    def test_universal_macho_validation(self) -> None:
+        fat_header = struct.pack(
+            ">II" + ("IIIII" * 2),
+            verify_release.FAT_MAGIC,
+            2,
+            verify_release.CPU_TYPE_X86_64,
+            3,
+            4096,
+            1024,
+            12,
+            verify_release.CPU_TYPE_ARM64,
+            0,
+            8192,
+            1024,
+            14,
+        )
+        verify_release.verify_universal_macho(fat_header)
+
+        single_arch_header = struct.pack(">IIIIIII", 0xFEEDFACF, verify_release.CPU_TYPE_ARM64, 0, 2, 0, 0, 0)
+        with self.assertRaisesRegex(verify_release.VerificationError, "universal"):
+            verify_release.verify_universal_macho(single_arch_header)
+
+        arm64_only_fat = struct.pack(
+            ">II" + ("IIIII" * 2),
+            verify_release.FAT_MAGIC,
+            2,
+            verify_release.CPU_TYPE_ARM64,
+            0,
+            4096,
+            1024,
+            14,
+            verify_release.CPU_TYPE_ARM64,
+            2,
+            8192,
+            1024,
+            14,
+        )
+        with self.assertRaisesRegex(verify_release.VerificationError, "x86_64"):
+            verify_release.verify_universal_macho(arm64_only_fat)
+
+    def test_end_to_end_signed_bundle_verification(self) -> None:
+        openssl = verify_release.resolve_openssl()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        key_pem = root / "ed25519.pem"
+        gen = subprocess.run(
+            [openssl, "genpkey", "-algorithm", "ED25519", "-out", str(key_pem)],
+            capture_output=True,
+            text=True,
+        )
+        if gen.returncode != 0:
+            self.skipTest(f"{openssl} does not support Ed25519 key generation")
+
+        pub_der = subprocess.check_output(
+            [openssl, "pkey", "-in", str(key_pem), "-pubout", "-outform", "DER"]
+        )
+        public_key_b64 = base64.b64encode(pub_der[-32:]).decode("ascii")
+
+        info = {
+            "CFBundleExecutable": "Ice",
+            "CFBundleShortVersionString": "0.12.6",
+            "CFBundleVersion": "1131",
+            "SUPublicEDKey": public_key_b64,
+            "SUFeedURL": verify_release.EXPECTED_FEED_URL,
+        }
+        info_plist = root / "Info.plist"
+        info_plist.write_bytes(plistlib.dumps(info))
+
+        fat_binary = struct.pack(
+            ">II" + ("IIIII" * 2),
+            verify_release.FAT_MAGIC,
+            2,
+            verify_release.CPU_TYPE_X86_64,
+            3,
+            4096,
+            1024,
+            12,
+            verify_release.CPU_TYPE_ARM64,
+            0,
+            8192,
+            1024,
+            14,
+        )
+        zip_path = root / "Ice.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("Ice.app/Contents/Info.plist", plistlib.dumps(info))
+            archive.writestr("Ice.app/Contents/MacOS/Ice", fat_binary)
+
+        sig_path = root / "Ice.zip.sig"
+        subprocess.check_call(
+            [
+                openssl,
+                "pkeyutl",
+                "-sign",
+                "-rawin",
+                "-inkey",
+                str(key_pem),
+                "-in",
+                str(zip_path),
+                "-out",
+                str(sig_path),
+            ]
+        )
+        signature_b64 = base64.b64encode(sig_path.read_bytes()).decode("ascii")
+
+        sums_path = root / "SHA256SUMS"
+        sums_path.write_text(
+            f"{hashlib.sha256(zip_path.read_bytes()).hexdigest()}  Ice.zip\n",
+            encoding="utf-8",
+        )
+
+        appcast_path = root / "appcast.xml"
+        appcast_path.write_text(
+            f"""\
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel><item>
+    <sparkle:version>1131</sparkle:version>
+    <sparkle:shortVersionString>0.12.6</sparkle:shortVersionString>
+    <enclosure
+      url="https://github.com/thunder951413/ice/releases/download/v0.12.6/Ice.zip"
+      length="{zip_path.stat().st_size}"
+      type="application/octet-stream"
+      sparkle:edSignature="{signature_b64}" />
+  </item></channel>
+</rss>
+""",
+            encoding="utf-8",
+        )
+
+        args = argparse.Namespace(
+            tag="v0.12.6",
+            zip=str(zip_path),
+            appcast=str(appcast_path),
+            sha256sums=str(sums_path),
+            info_plist=str(info_plist),
+        )
+        verify_release.verify(args)
 
 
 if __name__ == "__main__":

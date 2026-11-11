@@ -31,6 +31,21 @@ final class HotkeySettingsManager: ObservableObject {
 
     func performSetup() {
         loadInitialState()
+        if let appState {
+            for hotkey in hotkeys {
+                hotkey.assignAppState(appState)
+                switch hotkey.action {
+                case .toggleAlwaysHiddenSection:
+                    hotkey.setRegistrationAllowed(
+                        appState.menuBarManager.section(withName: .alwaysHidden)?.isEnabled == true
+                    )
+                case .showSectionDividers, .toggleApplicationMenus:
+                    hotkey.setRegistrationAllowed(!HostedItemVisibilityManager.isSupported)
+                case .toggleHiddenSection, .searchMenuBarItems, .enableIceBar:
+                    break
+                }
+            }
+        }
         configureCancellables()
     }
 
@@ -51,18 +66,14 @@ final class HotkeySettingsManager: ObservableObject {
     private func configureCancellables() {
         var c = Set<AnyCancellable>()
 
-        $hotkeys.combineLatest(Publishers.MergeMany(hotkeys.map { $0.$keyCombination }))
+        Publishers.MergeMany(hotkeys.map { $0.$keyCombination.dropFirst() })
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] hotkeys, _ in
-                guard
-                    let self,
-                    let appState
-                else {
+            .sink { [weak self] _ in
+                guard let self else {
                     return
                 }
                 var dict = [String: Data]()
                 for hotkey in hotkeys {
-                    hotkey.assignAppState(appState)
                     do {
                         dict[hotkey.action.rawValue] = try self.encoder.encode(hotkey.keyCombination)
                     } catch {

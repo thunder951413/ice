@@ -233,7 +233,7 @@ final class HostedItemVisibilityManager: ObservableObject {
         guard !isStopped else { throw CancellationError() }
         guard checkAccessibility() else { throw RevealError.permissionRequired }
         guard let bundle = item.hostedHandle?.sourceBundleIdentifier else { throw RevealError.unavailable }
-        let baselineWindowIDs = Set(
+        var baselineWindowIDs = Set(
             WindowInfo.getOnScreenWindows().filter { $0.ownerPID == item.ownerPID }.map(\.windowID)
         )
         if let previous = revealTokens[bundle] { finishRevealWaiter(previous, error: CancellationError()) }
@@ -265,6 +265,12 @@ final class HostedItemVisibilityManager: ObservableObject {
             }
             try Task.checkCancellation()
             guard revealTokens[bundle] == token, !isStopped else { throw CancellationError() }
+            // Include any status-bar backing windows that materialized when the
+            // item itself became visible so only panels/menus opened by `action`
+            // keep the item revealed.
+            baselineWindowIDs.formUnion(
+                WindowInfo.getOnScreenWindows().filter { $0.ownerPID == item.ownerPID }.map(\.windowID)
+            )
             try await action { [weak self] in
                 try Task.checkCancellation()
                 guard let self, !self.isStopped, self.revealTokens[bundle] == token else {
@@ -423,15 +429,16 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     private func releaseRestriction() {
+        let hadRestriction = assertion.isActive || assertion.isActivating
         // An activation may have concealed items natively before its completion
         // was superseded, leaving the backend's concealed set unchanged. The
         // set-based invalidation would then be skipped, so invalidate here.
-        if assertion.isActive || assertion.isActivating {
+        if hadRestriction {
             HostedMenuBarBackend.invalidateEnumerationCache()
+            generation += 1
+            ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
+            assertion.invalidateAll()
         }
-        generation += 1
-        ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
-        assertion.invalidateAll()
         needsReactivation = false
         HostedMenuBarBackend.setConcealedBundleIdentifiers([])
     }

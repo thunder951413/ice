@@ -184,12 +184,14 @@ extension MenuBarItemManager {
                     try await click(item: item, with: mouseButton)
                 } catch {
                     Logger.itemManager.error("ERROR: \(error)")
+                    return
                 }
             } else {
                 do {
                     try await move(item: item, to: .leftOfItem(targetItem))
                 } catch {
                     Logger.itemManager.error("ERROR: \(error)")
+                    return
                 }
             }
 
@@ -310,7 +312,9 @@ extension MenuBarItemManager {
         }
 
         while let context = tempShownItemContexts.popLast() {
-            guard let item = items.first(where: { $0.info == context.info }) else {
+            guard let item = items.first(where: { $0.stableID == context.stableID })
+                ?? items.first(where: { $0.info == context.info })
+            else {
                 continue
             }
             do {

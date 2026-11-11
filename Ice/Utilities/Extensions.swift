@@ -144,6 +144,10 @@ extension CGImage {
             }
         }
 
+        guard includedPixelCount > 0 else {
+            return nil
+        }
+
         // Multiply the included pixel count by 255 to convert the components
         // to their corresponding floating point values.
         let adjustedPixelCount = CGFloat(includedPixelCount * 255)
@@ -267,7 +271,7 @@ extension CGImage {
                 // Use memcmp to efficiently check the entire row for zeroed out alpha.
                 let rowByteBlock = bitmapData + (row * cgContext.bytesPerRow)
                 if memcmp(rowByteBlock, zeroByteBlock, image.width) == 0 {
-                    return true
+                    return false
                 }
                 // We found a non-zero row. Check each pixel until we find one that is opaque.
                 return columnRange.contains { column in

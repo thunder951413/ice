@@ -14,6 +14,7 @@ import hashlib
 import os
 import plistlib
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,10 @@ from pathlib import Path
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
 EXPECTED_FEED_URL = "https://raw.githubusercontent.com/thunder951413/ice/updates/appcast.xml"
 SHA256SUMS = re.compile(r"([0-9a-fA-F]{64})[ \t]+\*?Ice\.zip\Z")
+FAT_MAGIC = 0xCAFEBABE
+FAT_MAGIC_64 = 0xCAFEBABF
+CPU_TYPE_X86_64 = 0x01000007
+CPU_TYPE_ARM64 = 0x0100000C
 
 
 class VerificationError(Exception):
@@ -98,7 +103,7 @@ def appcast_metadata(path: Path) -> dict[str, str]:
     }
 
 
-def read_plist_from_zip(path: Path) -> dict[str, object]:
+def read_bundle_from_zip(path: Path) -> tuple[dict[str, object], bytes]:
     try:
         with zipfile.ZipFile(path) as archive:
             candidates = [
@@ -108,9 +113,57 @@ def read_plist_from_zip(path: Path) -> dict[str, object]:
             ]
             if len(candidates) != 1:
                 fail("Ice.zip must contain exactly one Ice.app/Contents/Info.plist")
-            return plistlib.loads(archive.read(candidates[0]))
+            plist_member = candidates[0]
+            info = plistlib.loads(archive.read(plist_member))
+            executable = str(info.get("CFBundleExecutable", "Ice")).strip() or "Ice"
+            prefix = plist_member[: -len("Info.plist")]
+            binary_member = f"{prefix}MacOS/{executable}"
+            if binary_member not in archive.namelist():
+                fail(f"Ice.zip is missing executable {binary_member}")
+            with archive.open(binary_member) as binary_stream:
+                header = binary_stream.read(4096)
+            return info, header
     except (OSError, zipfile.BadZipFile, plistlib.InvalidFileException) as error:
         fail(f"cannot read bundled Info.plist: {error}")
+
+
+def verify_universal_macho(header: bytes) -> None:
+    if len(header) < 8:
+        fail("bundled executable is too small to be a valid Mach-O binary")
+    magic, nfat_arch = struct.unpack_from(">II", header, 0)
+    if magic not in (FAT_MAGIC, FAT_MAGIC_64):
+        fail("bundled executable must be a universal (arm64 + x86_64) Mach-O binary")
+    if nfat_arch < 2 or nfat_arch > 16:
+        fail(f"unexpected Mach-O fat slice count: {nfat_arch}")
+    entry_size = 20 if magic == FAT_MAGIC else 32
+    required_bytes = 8 + (nfat_arch * entry_size)
+    if len(header) < required_bytes:
+        fail("truncated Mach-O fat header in bundled executable")
+    cpu_types = {
+        struct.unpack_from(">I", header, 8 + (index * entry_size))[0]
+        for index in range(nfat_arch)
+    }
+    missing = []
+    if CPU_TYPE_ARM64 not in cpu_types:
+        missing.append("arm64")
+    if CPU_TYPE_X86_64 not in cpu_types:
+        missing.append("x86_64")
+    if missing:
+        fail(f"bundled executable is missing required architecture(s): {', '.join(missing)}")
+
+
+def resolve_openssl() -> str:
+    configured = os.environ.get("OPENSSL")
+    if configured:
+        return configured
+    if sys.platform == "darwin":
+        for candidate in (
+            "/opt/homebrew/opt/openssl@3/bin/openssl",
+            "/usr/local/opt/openssl@3/bin/openssl",
+        ):
+            if os.access(candidate, os.X_OK):
+                return candidate
+    return "openssl"
 
 
 def read_sha256sums(path: Path, zip_path: Path) -> None:
@@ -140,7 +193,7 @@ def verify_signature(zip_path: Path, public_key: str, signature: str) -> None:
         fail("sparkle:edSignature must decode to a 64-byte Ed25519 signature")
     # SubjectPublicKeyInfo DER wrapper for a raw Ed25519 public key.
     der_key = bytes.fromhex("302a300506032b6570032100") + raw_key
-    openssl = os.environ.get("OPENSSL", "openssl")
+    openssl = resolve_openssl()
     with tempfile.TemporaryDirectory() as directory:
         key_path = Path(directory) / "public.der"
         signature_path = Path(directory) / "signature"
@@ -184,7 +237,8 @@ def verify(args: argparse.Namespace) -> None:
         repo_info = plistlib.loads(repo_info_path.read_bytes())
     except (OSError, plistlib.InvalidFileException) as error:
         fail(f"cannot read repository Info.plist: {error}")
-    bundled_info = read_plist_from_zip(zip_path)
+    bundled_info, binary_header = read_bundle_from_zip(zip_path)
+    verify_universal_macho(binary_header)
     metadata = appcast_metadata(appcast_path)
     short_version = str(bundled_info.get("CFBundleShortVersionString", ""))
     if tag[1:] != short_version:

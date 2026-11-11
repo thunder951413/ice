@@ -79,15 +79,11 @@ final class MenuBarSection {
     }
 
     /// The best screen to show the Ice Bar on.
-    private weak var screenForIceBar: NSScreen? {
-        guard let appState else {
+    private var screenForIceBar: NSScreen? {
+        guard appState != nil else {
             return nil
         }
-        if appState.isActiveSpaceFullscreen {
-            return NSScreen.screenWithMouse ?? NSScreen.main
-        } else {
-            return NSScreen.main
-        }
+        return NSScreen.screenWithMouse ?? NSScreen.main
     }
 
     /// A Boolean value that indicates whether the section is hidden.
@@ -211,9 +207,9 @@ final class MenuBarSection {
 
     /// Hides the section.
     func hide() {
+        stopRehideChecks()
         if appState?.menuBarManager.isHidingPaused == true {
             appState?.menuBarManager.iceBarPanel.close()
-            stopRehideChecks()
             return
         }
         Logger.menuBarSection.info("Hiding \(name.logString), useIceBar=\(useIceBar), isHidden=\(isHidden)")
@@ -253,7 +249,6 @@ final class MenuBarSection {
             controlItem.state = .hideItems
         }
         appState.allowShowOnHover()
-        stopRehideChecks()
     }
 
     /// Toggles the visibility of the section.
@@ -267,8 +262,7 @@ final class MenuBarSection {
 
     /// Starts running checks to determine when to rehide the section.
     private func startRehideChecks() {
-        rehideTimer?.invalidate()
-        rehideMonitor?.stop()
+        stopRehideChecks()
 
         guard
             let appState,
@@ -278,34 +272,47 @@ final class MenuBarSection {
             return
         }
 
-        rehideMonitor = UniversalEventMonitor(mask: .mouseMoved) { [weak self] event in
-            guard let self else {
-                return event
+        let armTimerIfNeeded: @MainActor () -> Void = { [weak self] in
+            guard
+                let self,
+                let appState = self.appState
+            else {
+                return
             }
-            if !Self.isMouseInsideMenuBar {
-                if rehideTimer == nil {
-                    rehideTimer = .scheduledTimer(
+            let isInside = Self.isMouseInsideMenuBar || appState.eventManager.isMouseInsideIceBar
+            if !isInside {
+                if self.rehideTimer == nil {
+                    self.rehideTimer = .scheduledTimer(
                         withTimeInterval: appState.settingsManager.generalSettingsManager.rehideInterval,
                         repeats: false
                     ) { [weak self] _ in
-                        guard let self else {
-                            return
-                        }
-                        if !Self.isMouseInsideMenuBar {
-                            Task {
-                                await self.hide()
+                        Task { @MainActor [weak self] in
+                            guard
+                                let self,
+                                let appState = self.appState
+                            else {
+                                return
                             }
-                        } else {
-                            Task {
-                                await self.startRehideChecks()
+                            self.rehideTimer = nil
+                            let stillInside = Self.isMouseInsideMenuBar || appState.eventManager.isMouseInsideIceBar
+                            if !stillInside {
+                                self.hide()
+                            } else {
+                                self.startRehideChecks()
                             }
                         }
                     }
                 }
             } else {
-                rehideTimer?.invalidate()
-                rehideTimer = nil
+                self.rehideTimer?.invalidate()
+                self.rehideTimer = nil
             }
+        }
+
+        armTimerIfNeeded()
+
+        rehideMonitor = UniversalEventMonitor(mask: .mouseMoved) { event in
+            armTimerIfNeeded()
             return event
         }
 
@@ -319,7 +326,7 @@ final class MenuBarSection {
     }
 
     /// Stops running checks to determine when to rehide the section.
-    private func stopRehideChecks() {
+    func stopRehideChecks() {
         rehideTimer?.invalidate()
         rehideMonitor?.stop()
         rehideTimer = nil

@@ -33,8 +33,8 @@ class Permission: ObservableObject, Identifiable {
 
     /// Observer that runs on a timer to check permissions.
     private var timerCancellable: AnyCancellable?
-    /// Observer that observes the ``hasPermission`` property.
-    private var hasPermissionCancellable: AnyCancellable?
+    /// Pending continuations awaiting permission grant or check cancellation.
+    private var waitContinuations = [UUID: CheckedContinuation<Void, Never>]()
 
     /// Creates a permission.
     ///
@@ -65,6 +65,9 @@ class Permission: ObservableObject, Identifiable {
 
     /// Sets up the internal observers for the permission.
     private func configureCancellables() {
+        guard timerCancellable == nil else {
+            return
+        }
         timerCancellable = Timer.publish(every: 1, on: .main, in: .default)
             .autoconnect()
             .merge(with: Just(.now))
@@ -72,8 +75,22 @@ class Permission: ObservableObject, Identifiable {
                 guard let self else {
                     return
                 }
-                hasPermission = check()
+                let current = check()
+                if hasPermission != current {
+                    hasPermission = current
+                }
+                if current {
+                    resumeWaitContinuations()
+                }
             }
+    }
+
+    private func resumeWaitContinuations() {
+        let continuations = Array(waitContinuations.values)
+        waitContinuations.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
     }
 
     /// Performs the request and opens the System Settings app to the appropriate pane.
@@ -90,16 +107,18 @@ class Permission: ObservableObject, Identifiable {
         guard !hasPermission else {
             return
         }
-        return await withCheckedContinuation { continuation in
-            hasPermissionCancellable = $hasPermission.sink { [weak self] hasPermission in
-                guard let self else {
-                    continuation.resume()
-                    return
-                }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
                 if hasPermission {
-                    hasPermissionCancellable?.cancel()
                     continuation.resume()
+                } else {
+                    waitContinuations[id] = continuation
                 }
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.waitContinuations.removeValue(forKey: id)?.resume()
             }
         }
     }
@@ -107,15 +126,19 @@ class Permission: ObservableObject, Identifiable {
     /// Refreshes the displayed permission state without starting a new timer.
     func refresh() {
         let current = check()
-        if current != hasPermission { hasPermission = current }
+        if current != hasPermission {
+            hasPermission = current
+        }
+        if current {
+            resumeWaitContinuations()
+        }
     }
 
     /// Stops running the permission check.
     func stopCheck() {
         timerCancellable?.cancel()
         timerCancellable = nil
-        hasPermissionCancellable?.cancel()
-        hasPermissionCancellable = nil
+        resumeWaitContinuations()
     }
 }
 
@@ -130,7 +153,7 @@ final class AccessibilityPermission: Permission {
                 "Arrange menu bar items.",
             ],
             isRequired: true,
-            settingsURL: nil,
+            settingsURL: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"),
             check: {
                 checkIsProcessTrusted()
             },
@@ -147,7 +170,9 @@ final class ScreenRecordingPermission: Permission {
     init() {
         super.init(
             title: "Screen Recording",
-            details: [
+            details: HostedItemVisibilityManager.isSupported ? [
+                "Edit the menu bar's dynamic appearance and tint.",
+            ] : [
                 "Edit the menu bar's appearance.",
                 "Display images of individual menu bar items.",
             ],

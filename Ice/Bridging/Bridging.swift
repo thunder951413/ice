@@ -88,12 +88,16 @@ extension Bridging {
 
     private static func getWindowList() -> [CGWindowID] {
         let windowCount = getWindowCount()
-        var list = [CGWindowID](repeating: 0, count: windowCount)
+        guard windowCount > 0 else {
+            return []
+        }
+        let capacity = windowCount + 16
+        var list = [CGWindowID](repeating: 0, count: capacity)
         var realCount: Int32 = 0
         let result = CGSGetWindowList(
             CGSMainConnectionID(),
             0,
-            Int32(windowCount),
+            Int32(capacity),
             &list,
             &realCount
         )
@@ -101,17 +105,21 @@ extension Bridging {
             Logger.bridging.error("CGSGetWindowList failed with error \(result.logString)")
             return []
         }
-        return [CGWindowID](list[..<Int(realCount)])
+        return Array(list.prefix(max(0, min(Int(realCount), list.count))))
     }
 
     private static func getOnScreenWindowList() -> [CGWindowID] {
         let windowCount = getOnScreenWindowCount()
-        var list = [CGWindowID](repeating: 0, count: windowCount)
+        guard windowCount > 0 else {
+            return []
+        }
+        let capacity = windowCount + 16
+        var list = [CGWindowID](repeating: 0, count: capacity)
         var realCount: Int32 = 0
         let result = CGSGetOnScreenWindowList(
             CGSMainConnectionID(),
             0,
-            Int32(windowCount),
+            Int32(capacity),
             &list,
             &realCount
         )
@@ -119,17 +127,21 @@ extension Bridging {
             Logger.bridging.error("CGSGetOnScreenWindowList failed with error \(result.logString)")
             return []
         }
-        return [CGWindowID](list[..<Int(realCount)])
+        return Array(list.prefix(max(0, min(Int(realCount), list.count))))
     }
 
     private static func getMenuBarWindowList() -> [CGWindowID] {
         let windowCount = getWindowCount()
-        var list = [CGWindowID](repeating: 0, count: windowCount)
+        guard windowCount > 0 else {
+            return []
+        }
+        let capacity = windowCount + 16
+        var list = [CGWindowID](repeating: 0, count: capacity)
         var realCount: Int32 = 0
         let result = CGSGetProcessMenuBarWindowList(
             CGSMainConnectionID(),
             0,
-            Int32(windowCount),
+            Int32(capacity),
             &list,
             &realCount
         )
@@ -137,7 +149,7 @@ extension Bridging {
             Logger.bridging.error("CGSGetProcessMenuBarWindowList failed with error \(result.logString)")
             return []
         }
-        return [CGWindowID](list[..<Int(realCount)])
+        return Array(list.prefix(max(0, min(Int(realCount), list.count))))
     }
 
     private static func getOnScreenMenuBarWindowList() -> [CGWindowID] {
@@ -187,11 +199,11 @@ extension Bridging {
         } else {
             getWindowList()
         }
-        return if option.contains(.activeSpace) {
-            list.filter(isWindowOnActiveSpace)
-        } else {
-            list
+        if option.contains(.activeSpace) {
+            let currentSpaceID = activeSpaceID
+            return list.filter { getSpaceList(for: $0, option: .allSpaces).contains(currentSpaceID) }
         }
+        return list
     }
 }
 

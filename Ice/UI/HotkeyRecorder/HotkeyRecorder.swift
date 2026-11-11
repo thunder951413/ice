@@ -39,6 +39,9 @@ struct HotkeyRecorder<Label: View>: View {
                 model.isPresentingReservedByMacOSError = false
             }
         }
+        .onDisappear {
+            model.stopRecording()
+        }
     }
 
     @ViewBuilder
@@ -76,6 +79,11 @@ struct HotkeyRecorder<Label: View>: View {
             )
         )
         .aspectRatio(1, contentMode: .fit)
+        .accessibilityLabel(
+            model.isRecording
+                ? "Cancel recording"
+                : (model.hotkey.isEnabled ? "Clear hotkey" : "Record hotkey")
+        )
     }
 
     @ViewBuilder

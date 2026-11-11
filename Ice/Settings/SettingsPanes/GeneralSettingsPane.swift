@@ -7,6 +7,17 @@ import SwiftUI
 
 @MainActor
 struct GeneralSettingsPane: View {
+    private enum CustomIconImportError: LocalizedError {
+        case invalidImageData
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidImageData:
+                "The selected file could not be loaded as an image."
+            }
+        }
+    }
+
     @EnvironmentObject var appState: AppState
     @StateObject private var loginItemManager = LoginItemManager()
     @State private var isImportingCustomIceIcon = false
@@ -220,11 +231,17 @@ struct GeneralSettingsPane: View {
             ) { result in
                 do {
                     let url = try result.get()
-                    if url.startAccessingSecurityScopedResource() {
-                        defer { url.stopAccessingSecurityScopedResource() }
-                        let data = try Data(contentsOf: url)
-                        manager.iceIcon = ControlItemImageSet(name: .custom, image: .data(data))
+                    let accessed = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if accessed {
+                            url.stopAccessingSecurityScopedResource()
+                        }
                     }
+                    let data = try Data(contentsOf: url)
+                    guard NSImage(data: data) != nil else {
+                        throw CustomIconImportError.invalidImageData
+                    }
+                    manager.iceIcon = ControlItemImageSet(name: .custom, image: .data(data))
                 } catch {
                     presentedError = LocalizedErrorWrapper(error)
                     isPresentingError = true
@@ -392,6 +409,7 @@ struct GeneralSettingsPane: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Reset to the default spacing")
+                    .accessibilityLabel("Reset to the default spacing")
                     .disabled(isApplyingOffset || !isActualOffsetDifferentFromDefault)
                 }
             } label: {
@@ -417,6 +435,11 @@ struct GeneralSettingsPane: View {
         }
         .onAppear {
             tempItemSpacingOffset = manager.itemSpacingOffset
+        }
+        .onChange(of: manager.itemSpacingOffset) { _, newValue in
+            if !isApplyingOffset {
+                tempItemSpacingOffset = newValue
+            }
         }
     }
 

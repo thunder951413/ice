@@ -29,9 +29,11 @@ struct AdvancedSettingsPane: View {
     var body: some View {
         IceForm {
             IceSection {
-                hideApplicationMenus
-                showSectionDividers
-                showAllSectionsOnUserDrag
+                if !HostedItemVisibilityManager.isSupported {
+                    hideApplicationMenus
+                    showSectionDividers
+                    showAllSectionsOnUserDrag
+                }
                 showContextMenuOnRightClick
             }
             IceSection {

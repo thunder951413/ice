@@ -68,7 +68,7 @@ final class AppState: ObservableObject {
 
     /// Prevents managers from being configured more than once when permission
     /// state and window lifecycle events arrive close together.
-    private var hasPerformedSetup = false
+    private(set) var hasPerformedSetup = false
 
     /// A Boolean value that indicates whether the app is running as a SwiftUI preview.
     let isPreview: Bool = {
@@ -139,7 +139,8 @@ final class AppState: ObservableObject {
         .sink { [weak self] shouldUpdate in
             guard
                 let self,
-                shouldUpdate
+                shouldUpdate,
+                !HostedItemVisibilityManager.isSupported
             else {
                 return
             }

@@ -80,7 +80,7 @@ final class MenuBarItemSpacingManager {
     }
 
     /// Asynchronously launches the app at the given URL.
-    private nonisolated func launchApp(at applicationURL: URL, bundleIdentifier: String) async throws {
+    private func launchApp(at applicationURL: URL, bundleIdentifier: String) async throws {
         if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
             Logger.spacing.debug("Application \"\(logString(for: app))\" is already open, so skipping launch")
             return
@@ -123,11 +123,17 @@ final class MenuBarItemSpacingManager {
 
         var failedApps = [String]()
 
+        let excludedBundles: Set<String> = [
+            "com.apple.controlcenter",
+            "com.apple.MenuBarAgent",
+            "com.apple.systemuiserver",
+        ]
+
         await withTaskGroup(of: Void.self) { group in
             for pid in pids {
                 guard
                     let app = NSRunningApplication(processIdentifier: pid),
-                    app.bundleIdentifier != "com.apple.controlcenter", // ControlCenter handles its own relaunch, so skip it.
+                    app.bundleIdentifier.map({ !excludedBundles.contains($0) }) ?? true,
                     app != .current
                 else {
                     continue

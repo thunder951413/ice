@@ -32,21 +32,23 @@ Subsequent feed writes need only the workflow's Contents write permission.
 ## Trigger publication
 
 The tag starts a workflow that waits up to five minutes for the three assets.
-Have the archive and notes ready before pushing the tag:
+Sign and verify `Ice.zip`, `appcast.xml`, and `SHA256SUMS` locally before
+pushing the tag so publication never races local Keychain prompts:
 
 ```sh
+python3 Scripts/create-appcast.py --directory build/releases/v0.12.1
+python3 Scripts/verify-release.py \
+  --tag v0.12.1 --zip build/releases/v0.12.1/Ice.zip \
+  --appcast build/releases/v0.12.1/appcast.xml \
+  --sha256sums build/releases/v0.12.1/SHA256SUMS
 git tag v0.12.1
 git push origin v0.12.1
 gh release create v0.12.1 --repo thunder951413/ice --verify-tag --draft \
   --target "$(git rev-parse v0.12.1)" --title 'Ice 0.12.1' \
-  --notes-file build/releases/v0.12.1/notes.md build/releases/v0.12.1/Ice.zip
-python3 Scripts/create-appcast.py --directory build/releases/v0.12.1
-OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl python3 Scripts/verify-release.py \
-  --tag v0.12.1 --zip build/releases/v0.12.1/Ice.zip \
-  --appcast build/releases/v0.12.1/appcast.xml \
-  --sha256sums build/releases/v0.12.1/SHA256SUMS
-gh release upload v0.12.1 --repo thunder951413/ice \
-  build/releases/v0.12.1/appcast.xml build/releases/v0.12.1/SHA256SUMS
+  --notes-file build/releases/v0.12.1/notes.md \
+  build/releases/v0.12.1/Ice.zip \
+  build/releases/v0.12.1/appcast.xml \
+  build/releases/v0.12.1/SHA256SUMS
 ```
 
 `create-appcast.py` signs the exact archive via Sparkle's local Keychain and

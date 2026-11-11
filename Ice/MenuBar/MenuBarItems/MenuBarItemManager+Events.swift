@@ -134,7 +134,7 @@ extension MenuBarItemManager {
     /// - Parameters:
     ///   - timeout: Amount of time to wait before throwing an error.
     ///   - operation: The operation to perform.
-    func waitWithTask(timeout: Duration?, operation: @escaping @Sendable () async throws -> Void) async throws {
+    func waitWithTask(timeout: Duration?, operation: @escaping @MainActor @Sendable () async throws -> Void) async throws {
         let task = if let timeout {
             Task(timeout: timeout, operation: operation)
         } else {
@@ -151,7 +151,7 @@ extension MenuBarItemManager {
             guard let self else {
                 return
             }
-            while await isMovingItem {
+            while isMovingItem {
                 try Task.checkCancellation()
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -170,7 +170,7 @@ extension MenuBarItemManager {
             }
             while true {
                 try Task.checkCancellation()
-                guard let date = await lastMouseMoveStartDate else {
+                guard let date = lastMouseMoveStartDate else {
                     break
                 }
                 if Date.now.timeIntervalSince(date) > threshold {
@@ -186,26 +186,50 @@ extension MenuBarItemManager {
     /// - Parameter timeout: Amount of time to wait before throwing an error.
     func waitForNoModifiersPressed(timeout: Duration? = nil) async throws {
         try await waitWithTask(timeout: timeout) {
-            // Return early if no flags are pressed.
-            if NSEvent.modifierFlags.isEmpty {
+            let blockingModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+            // Return early if no interactive modifier keys are pressed (ignore Caps Lock / Fn / Numpad).
+            if NSEvent.modifierFlags.isDisjoint(with: blockingModifiers) {
                 return
             }
 
-            var cancellable: AnyCancellable?
+            final class ContinuationState: @unchecked Sendable {
+                var cancellable: AnyCancellable?
+                var continuation: CheckedContinuation<Void, Never>?
 
-            await withCheckedContinuation { continuation in
-                cancellable = Publishers.Merge(
-                    UniversalEventMonitor.publisher(for: .flagsChanged),
-                    RunLoopLocalEventMonitor.publisher(for: .flagsChanged, mode: .eventTracking)
-                )
-                .removeDuplicates()
-                .sink { _ in
-                    if NSEvent.modifierFlags.isEmpty {
-                        cancellable?.cancel()
-                        continuation.resume()
-                    }
+                func finish() {
+                    guard let continuation else { return }
+                    self.continuation = nil
+                    cancellable?.cancel()
+                    cancellable = nil
+                    continuation.resume()
                 }
             }
+
+            let state = ContinuationState()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    state.continuation = continuation
+                    if Task.isCancelled || NSEvent.modifierFlags.isDisjoint(with: blockingModifiers) {
+                        state.finish()
+                        return
+                    }
+                    state.cancellable = Publishers.Merge(
+                        UniversalEventMonitor.publisher(for: .flagsChanged),
+                        RunLoopLocalEventMonitor.publisher(for: .flagsChanged, mode: .eventTracking)
+                    )
+                    .removeDuplicates()
+                    .sink { _ in
+                        if NSEvent.modifierFlags.isDisjoint(with: blockingModifiers) {
+                            state.finish()
+                        }
+                    }
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    state.finish()
+                }
+            }
+            try Task.checkCancellation()
         }
     }
 }
@@ -1189,9 +1213,12 @@ extension MenuBarItemManager {
         CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?
             .post(tap: .cghidEventTap)
         try await Task.sleep(for: .milliseconds(20))
+        try Task.checkCancellation()
         down.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(20))
+        // Always pair mouse-down with mouse-up even if cancelled mid-click.
+        try? await Task.sleep(for: .milliseconds(20))
         up.post(tap: .cghidEventTap)
+        try Task.checkCancellation()
     }
 }
 

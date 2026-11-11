@@ -22,6 +22,7 @@ extension NSSplitViewItem {
 
     @objc private var swizzledCanCollapse: Bool {
         if
+            viewController.isViewLoaded,
             let window = viewController.view.window,
             window.identifier?.rawValue == Constants.settingsWindowID
         {

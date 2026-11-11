@@ -22,7 +22,7 @@ struct ControlItemImageSet: Codable, Hashable, Identifiable {
     let hidden: ControlItemImage
     let visible: ControlItemImage
 
-    var id: Int { hashValue }
+    var id: Self { self }
 
     init(name: Name, hidden: ControlItemImage, visible: ControlItemImage) {
         self.name = name

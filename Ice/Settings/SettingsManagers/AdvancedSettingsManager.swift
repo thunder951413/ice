@@ -56,8 +56,12 @@ final class AdvancedSettingsManager: ObservableObject {
         Defaults.ifPresent(key: .showSectionDividers, assign: &showSectionDividers)
         Defaults.ifPresent(key: .enableAlwaysHiddenSection, assign: &enableAlwaysHiddenSection)
         Defaults.ifPresent(key: .canToggleAlwaysHiddenSection, assign: &canToggleAlwaysHiddenSection)
-        Defaults.ifPresent(key: .showOnHoverDelay, assign: &showOnHoverDelay)
-        Defaults.ifPresent(key: .tempShowInterval, assign: &tempShowInterval)
+        Defaults.ifPresent(key: .showOnHoverDelay) { (value: TimeInterval) in
+            showOnHoverDelay = value.isFinite ? min(max(value, 0), 1) : 0.2
+        }
+        Defaults.ifPresent(key: .tempShowInterval) { (value: TimeInterval) in
+            tempShowInterval = value.isFinite ? min(max(value, 0), 30) : 15
+        }
         Defaults.ifPresent(key: .showAllSectionsOnUserDrag, assign: &showAllSectionsOnUserDrag)
         Defaults.ifPresent(key: .showContextMenuOnRightClick, assign: &showContextMenuOnRightClick)
     }

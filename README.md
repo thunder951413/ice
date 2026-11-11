@@ -71,9 +71,9 @@ CONFIGURATION=Release ./Scripts/build-local.sh -quiet # Release 构建
 ./Scripts/test-regressions.sh                         # 策略回归、发布包校验、桥接编译、Ice Bar 渲染
 ```
 
-`build-local.sh` 优先使用本机 Apple Development 证书，没有则构建未签名版本，产物在 `build/DerivedData`（该目录体积较大，已被 git 忽略，可随时删除）。
+`build-local.sh` 会自动定位本机 Xcode，优先使用 Apple Development 证书签名（没有则构建未签名版本），并在 `CONFIGURATION=Release` 下默认生成 `arm64 + x86_64` 通用二进制；产物位于 `build/DerivedData`（该目录体积较大，已被 git 忽略，可随时删除）。
 
-需要 macOS 27 与辅助功能权限的实机测试（只读快照、隐藏／恢复）见 `Scripts/test-hosted-*.sh`。CI 在推送到 `main` 时运行 SwiftLint、发布脚本测试、逻辑测试与 Debug 构建。
+需要 macOS 27 与辅助功能权限的实机测试（只读快照、隐藏／恢复）见 `Scripts/test-hosted-*.sh`。CI 在推送或 PR 时运行 SwiftLint、发布脚本与通用 Mach-O 校验测试、策略回归测试，以及 Debug 与通用 Release 构建。
 
 ## 文档
 

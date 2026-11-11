@@ -16,6 +16,9 @@ final class MenuBarAppearanceEditorPanel: NSPanel {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Active popover, if shown.
+    private weak var activePopover: MenuBarAppearanceEditorPopover?
+
     init(appState: AppState) {
         super.init(
             contentRect: CGRect(x: 0, y: 0, width: 1, height: 1),
@@ -46,17 +49,19 @@ final class MenuBarAppearanceEditorPanel: NSPanel {
 
     /// Shows the appearance editor popover.
     func showAppearanceEditorPopover() {
+        activePopover?.performClose(self)
         guard
             let appState,
             let contentView,
-            let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }),
-            let menuBarHeight = NSApp.mainMenu?.menuBarHeight
+            let screen = NSScreen.screenWithMouse ?? NSScreen.main
         else {
             return
         }
+        let menuBarHeight = screen.getMenuBarHeight() ?? NSStatusBar.system.thickness
         setFrameOrigin(CGPoint(x: screen.frame.midX - frame.width / 2, y: screen.frame.maxY - menuBarHeight))
         let popover = MenuBarAppearanceEditorPopover(appState: appState)
         popover.delegate = self
+        activePopover = popover
         popover.show(relativeTo: .zero, of: contentView, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         NSColorPanel.shared.hidesOnDeactivate = false
@@ -68,6 +73,10 @@ extension MenuBarAppearanceEditorPanel: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         if let popover = notification.object as? MenuBarAppearanceEditorPopover {
             popover.mouseDownMonitor.stop()
+            if activePopover === popover {
+                activePopover = nil
+            }
+            appState?.appearanceManager.previewConfiguration = nil
             orderOut(popover)
             NSColorPanel.shared.close()
             NSColorPanel.shared.hidesOnDeactivate = true
@@ -82,8 +91,17 @@ extension MenuBarAppearanceEditorPanel: NSPopoverDelegate {
 private final class MenuBarAppearanceEditorPopover: NSPopover {
     private weak var appState: AppState?
 
-    private(set) lazy var mouseDownMonitor = GlobalEventMonitor(mask: .leftMouseDown) { [weak self] _ in
-        self?.performClose(self)
+    private(set) lazy var mouseDownMonitor = UniversalEventMonitor(mask: .leftMouseDown) { [weak self] event in
+        guard let self else {
+            return event
+        }
+        let popoverWindow = contentViewController?.view.window
+        if let eventWindow = event.window,
+           eventWindow === popoverWindow || eventWindow === NSColorPanel.shared {
+            return event
+        }
+        performClose(self)
+        return event
     }
 
     @ViewBuilder

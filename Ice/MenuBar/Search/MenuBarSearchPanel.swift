@@ -42,11 +42,14 @@ final class MenuBarSearchPanel: NSPanel {
     }
 
     /// Monitor for key down events.
-    private lazy var keyDownMonitor = UniversalEventMonitor(
+    private lazy var keyDownMonitor = LocalEventMonitor(
         mask: [.keyDown]
     ) { [weak self] event in
+        guard let self, self.isKeyWindow else {
+            return event
+        }
         if KeyCode(rawValue: Int(event.keyCode)) == .escape {
-            self?.close()
+            self.close()
             return nil
         }
         return event
@@ -272,6 +275,9 @@ private struct MenuBarSearchContentView: View {
         }
         .onChange(of: itemManager.itemCache, initial: true) {
             updateDisplayedItems()
+            if selection == nil || !displayedItems.contains(where: { $0.isSelectable && $0.id == selection }) {
+                selectFirstDisplayedItem()
+            }
         }
     }
 

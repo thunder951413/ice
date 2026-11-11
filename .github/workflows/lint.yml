@@ -1,4 +1,6 @@
 name: Quality checks
+permissions:
+  contents: read
 on:
   push:
     branches: [ "main" ]
@@ -53,6 +55,13 @@ jobs:
       - name: Build unsigned Debug app
         env:
           CONFIGURATION: Debug
+          DEVELOPMENT_TEAM: ""
+        run: |
+          export DEVELOPER_DIR="$(xcode-select -p)"
+          ./Scripts/build-local.sh CODE_SIGNING_ALLOWED=NO
+      - name: Build unsigned universal Release app
+        env:
+          CONFIGURATION: Release
           DEVELOPMENT_TEAM: ""
         run: |
           export DEVELOPER_DIR="$(xcode-select -p)"

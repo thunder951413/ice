@@ -13,9 +13,11 @@ final class IceBarPanel: NSPanel {
 
     private(set) var currentSection: MenuBarSection.Name?
     private(set) var presentationGeneration = 0
+    private weak var targetScreen: NSScreen?
+    private var resolvedAnchor: (location: IceBarLocation, mouseX: CGFloat?)?
 
     private var cancellables = Set<AnyCancellable>()
-    private lazy var escapeMonitor = UniversalEventMonitor(mask: .keyDown) { [weak self] event in
+    private lazy var escapeMonitor = LocalEventMonitor(mask: .keyDown) { [weak self] event in
         guard let self, self.isKeyWindow, event.keyCode == KeyCode.escape.rawValue else { return event }
         self.close()
         return nil
@@ -101,7 +103,7 @@ final class IceBarPanel: NSPanel {
             .sink { [weak self] _ in
                 guard
                     let self,
-                    let screen
+                    let screen = targetScreen ?? self.screen
                 else {
                     return
                 }
@@ -136,12 +138,15 @@ final class IceBarPanel: NSPanel {
 
             switch iceBarLocation {
             case .dynamic:
+                if let resolved = resolvedAnchor?.location, resolved != .dynamic {
+                    return getOrigin(for: resolved)
+                }
                 if appState.eventManager.isMouseInsideEmptyMenuBarSpace {
                     return getOrigin(for: .mousePointer)
                 }
                 return getOrigin(for: .iceIcon)
             case .mousePointer:
-                guard let location = MouseCursor.locationAppKit else {
+                guard let locationX = resolvedAnchor?.mouseX ?? MouseCursor.locationAppKit?.x else {
                     return originForRightOfScreen
                 }
 
@@ -152,7 +157,7 @@ final class IceBarPanel: NSPanel {
                     return originForRightOfScreen
                 }
 
-                return CGPoint(x: (location.x - frame.width / 2).clamped(to: lowerBound...upperBound), y: originY)
+                return CGPoint(x: (locationX - frame.width / 2).clamped(to: lowerBound...upperBound), y: originY)
             case .iceIcon:
                 // Anchor to the actual hosted icon when it exists. Its source
                 // window is shared or stale; fall back to the click location.
@@ -196,6 +201,14 @@ final class IceBarPanel: NSPanel {
             return
         }
         presentationGeneration += 1
+        targetScreen = screen
+        let configuredLocation = appState.settingsManager.generalSettingsManager.iceBarLocation
+        let effectiveLocation: IceBarLocation = if configuredLocation == .dynamic {
+            appState.eventManager.isMouseInsideEmptyMenuBarSpace ? .mousePointer : .iceIcon
+        } else {
+            configuredLocation
+        }
+        resolvedAnchor = (effectiveLocation, MouseCursor.locationAppKit?.x)
         // Important that we set the navigation state and current section before updating the cache.
         appState.navigationState.isIceBarPresented = true
         currentSection = section
@@ -237,7 +250,14 @@ final class IceBarPanel: NSPanel {
         super.close()
         contentView = nil
         currentSection = nil
-        appState?.navigationState.isIceBarPresented = false
+        targetScreen = nil
+        resolvedAnchor = nil
+        if let appState {
+            appState.navigationState.isIceBarPresented = false
+            for section in appState.menuBarManager.sections {
+                section.stopRehideChecks()
+            }
+        }
     }
 }
 
@@ -304,7 +324,6 @@ private struct IceBarContentView: View {
     @EnvironmentObject var itemManager: MenuBarItemManager
     @EnvironmentObject var imageCache: MenuBarItemImageCache
     @EnvironmentObject var menuBarManager: MenuBarManager
-    @State private var frame = CGRect.zero
     @State private var scrollIndicatorsFlashTrigger = 0
     @State private var loadingTimedOut = false
 
@@ -317,6 +336,17 @@ private struct IceBarContentView: View {
     }
 
     private var availableWidth: CGFloat { max(160, screen.frame.width - 32) }
+
+    private var maxScrollWidth: CGFloat {
+        max(64, availableWidth - 16 - (settings.iceBarPadding + 2) * 2)
+    }
+
+    private var itemsRowWidth: CGFloat {
+        let count = items.count
+        guard count > 0 else { return 0 }
+        return CGFloat(count) * (settings.iceBarIconSize + 4) +
+            CGFloat(count - 1) * settings.iceBarItemSpacing
+    }
 
     var body: some View {
         content
@@ -343,7 +373,6 @@ private struct IceBarContentView: View {
             .padding(8) // Transparent space for the compact shadow.
             .frame(maxWidth: availableWidth)
             .fixedSize()
-            .onFrameChange(update: $frame)
     }
 
     private func openSearch() {
@@ -384,6 +413,7 @@ private struct IceBarContentView: View {
                     }
                 }
             }
+            .frame(width: min(itemsRowWidth, maxScrollWidth))
             .environment(\.isScrollEnabled, true)
             .defaultScrollAnchor(.trailing)
             .scrollIndicatorsFlash(trigger: scrollIndicatorsFlashTrigger)

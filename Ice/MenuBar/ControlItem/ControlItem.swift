@@ -374,6 +374,7 @@ final class ControlItem {
             .sink { [weak self] isVisible in
                 guard
                     let self,
+                    !isVirtualHostedDivider,
                     let appState,
                     let section
                 else {
@@ -392,11 +393,7 @@ final class ControlItem {
                     return
                 }
 
-                if isVisible {
-                    hotkey.enable()
-                } else {
-                    hotkey.disable()
-                }
+                hotkey.setRegistrationAllowed(isVisible)
             }
             .store(in: &c)
 
@@ -491,6 +488,12 @@ final class ControlItem {
                     else {
                         return
                     }
+                    if isVirtualHostedDivider {
+                        appState.settingsManager.hotkeySettingsManager
+                            .hotkey(withAction: .toggleAlwaysHiddenSection)?
+                            .setRegistrationAllowed(enable)
+                        return
+                    }
                     if enable {
                         addToMenuBar()
                     } else {
@@ -552,9 +555,11 @@ final class ControlItem {
                 // Custom icons need to be resized to fit inside the button.
                 let originalWidth = originalImage.size.width
                 let originalHeight = originalImage.size.height
-                let ratio = max(originalWidth / 25, originalHeight / 17)
-                let newSize = CGSize(width: originalWidth / ratio, height: originalHeight / ratio)
-                button.image = originalImage.resized(to: newSize)
+                if originalWidth > 0, originalHeight > 0 {
+                    let ratio = max(originalWidth / 25, originalHeight / 17)
+                    let newSize = CGSize(width: originalWidth / ratio, height: originalHeight / ratio)
+                    button.image = originalImage.resized(to: newSize)
+                }
             }
         case .hidden, .alwaysHidden:
             switch state {
@@ -687,6 +692,16 @@ final class ControlItem {
             menu.addItem(item)
         }
 
+        let pauseItem = NSMenuItem(
+            title: appState.menuBarManager.isHidingPaused
+                ? "Resume Hiding Menu Bar Items"
+                : "Pause Hiding Menu Bar Items",
+            action: #selector(toggleHidingPaused),
+            keyEquivalent: ""
+        )
+        pauseItem.target = self
+        menu.addItem(pauseItem)
+
         menu.addItem(.separator())
 
         let checkForUpdatesItem = NSMenuItem(
@@ -713,6 +728,11 @@ final class ControlItem {
     /// Toggles the menu bar section associated with the given menu item.
     @objc private func toggleMenuBarSection(for menuItem: NSMenuItem) {
         Self.sectionStorage.value(for: menuItem)?.toggle()
+    }
+
+    /// Pauses or resumes hiding menu bar items for the current session.
+    @objc private func toggleHidingPaused() {
+        appState?.menuBarManager.toggleHidingPaused()
     }
 
     /// Opens the menu bar search panel.

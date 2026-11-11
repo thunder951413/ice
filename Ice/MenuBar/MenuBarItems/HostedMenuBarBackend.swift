@@ -94,6 +94,7 @@ enum HostedMenuBarBackend {
     private struct RenderedItem {
         let element: AXUIElement
         let pid: pid_t
+        let displayID: CGDirectDisplayID
         let frame: CGRect
         let identityStrings: Set<String>
     }
@@ -621,10 +622,15 @@ enum HostedMenuBarBackend {
         }
 
         // AX can expose system-created clones at identical positions. Prefer one
-        // descriptor per source application and frame.
+        // descriptor per source application and global frame, while keeping
+        // distinct sibling descriptors that report window-local coordinates.
         var seen = Set<String>()
         let deduplicated = result.filter { item in
-            let key = "\(item.sourcePID)|\(NSStringFromRect(item.initialFrame))|\(item.title ?? "")"
+            let key = if item.requiresGlobalHitTesting {
+                item.stableID
+            } else {
+                "\(item.sourcePID)|\(NSStringFromRect(item.initialFrame))|\(item.title ?? "")"
+            }
             return seen.insert(key).inserted
         }
         logger.debug("Discovered \(deduplicated.count) hosted menu bar items")
@@ -726,6 +732,45 @@ enum HostedMenuBarBackend {
         matchingRenderedItem(for: item, in: renderedItems())?.element
     }
 
+    static func pickUnambiguousMatch<Candidate>(
+        from matches: [Candidate],
+        preferredDisplayID: CGDirectDisplayID?,
+        displayID: (Candidate) -> CGDirectDisplayID,
+        frame: (Candidate) -> CGRect
+    ) -> Candidate? {
+        guard let firstMatch = matches.first else { return nil }
+        let targetDisplayID: CGDirectDisplayID
+        if let preferredDisplayID, matches.contains(where: { displayID($0) == preferredDisplayID }) {
+            targetDisplayID = preferredDisplayID
+        } else {
+            targetDisplayID = displayID(firstMatch)
+        }
+        let displayMatches = matches.filter { displayID($0) == targetDisplayID }
+        // Multiple same-owner icons without identifiers cannot safely be picked
+        // by index on the same display: refuse ambiguity instead of activating
+        // a neighboring item, while still allowing MenuBarAgent's per-display
+        // instances on multi-monitor setups.
+        guard let first = displayMatches.first,
+              displayMatches.dropFirst().allSatisfy({ frame($0) == frame(first) }) else { return nil }
+        return first
+    }
+
+    private static func preferredRenderedDisplayID() -> CGDirectDisplayID? {
+        guard Thread.isMainThread else { return nil }
+        return MainActor.assumeIsolated {
+            let location = NSEvent.mouseLocation
+            if let screen = NSScreen.screens.first(where: { $0.frame.contains(location) }) {
+                return screen.displayID
+            }
+            if let screen = NSScreen.screens.first(where: {
+                location.x >= $0.frame.minX && location.x < $0.frame.maxX && location.y == $0.frame.maxY
+            }) {
+                return screen.displayID
+            }
+            return NSScreen.main?.displayID
+        }
+    }
+
     private static func matchingRenderedItem(
         for source: HostedMenuBarItemHandle, in candidates: [RenderedItem]
     ) -> RenderedItem? {
@@ -739,11 +784,12 @@ enum HostedMenuBarBackend {
             return sourceStrings.isEmpty || candidate.identityStrings.isEmpty ||
                 !sourceStrings.isDisjoint(with: candidate.identityStrings)
         }
-        // Multiple same-owner icons without identifiers cannot safely be picked
-        // by index: refuse ambiguity instead of activating a neighboring item.
-        guard let first = matches.first,
-              matches.dropFirst().allSatisfy({ $0.frame == first.frame }) else { return nil }
-        return first
+        return pickUnambiguousMatch(
+            from: matches,
+            preferredDisplayID: preferredRenderedDisplayID(),
+            displayID: \.displayID,
+            frame: \.frame
+        )
     }
 
     /// How old a rendered snapshot may be for passive geometry reads.
@@ -758,25 +804,29 @@ enum HostedMenuBarBackend {
     }
 
     private static func loadRenderedItems() async -> [RenderedItem]? {
-        let input = await MainActor.run { () -> (pid_t, [CGRect])? in
+        let input = await MainActor.run { () -> (pid_t, [(displayID: CGDirectDisplayID, bounds: CGRect)])? in
             guard AXIsProcessTrusted(), let host = NSRunningApplication
                     .runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first else { return nil }
-            return (host.processIdentifier, NSScreen.screens.map { CGDisplayBounds($0.displayID) })
+            let displays = NSScreen.screens.map { ($0.displayID, CGDisplayBounds($0.displayID)) }
+            return (host.processIdentifier, displays)
         }
-        guard let (pid, bounds) = input else {
+        guard let (pid, displays) = input else {
             logger.debug("Rendered menu bar host or Accessibility permission unavailable")
             return nil
         }
         return await withCheckedContinuation { continuation in
             renderedQueue.async {
-                continuation.resume(returning: readRenderedItems(hostPID: pid, displayBounds: bounds))
+                continuation.resume(returning: readRenderedItems(hostPID: pid, displays: displays))
             }
         }
     }
 
     /// Walk MenuBarAgent once for every item in a layout/hit-test batch. Read
     /// each leaf's AX metadata once; matching individual owners is then in-memory.
-    private static func readRenderedItems(hostPID: pid_t, displayBounds: [CGRect]) -> [RenderedItem]? {
+    private static func readRenderedItems(
+        hostPID: pid_t,
+        displays: [(displayID: CGDirectDisplayID, bounds: CGRect)]
+    ) -> [RenderedItem]? {
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(500))
         let application = AXUIElementCreateApplication(hostPID)
         AXUIElementSetMessagingTimeout(application, 0.05)
@@ -784,7 +834,7 @@ enum HostedMenuBarBackend {
             logger.debug("Rendered menu bar window list unavailable")
             return nil
         }
-        var remainingNodes = 512
+        var remainingNodes = min(2048, 512 * max(1, windows.count))
         var visited = Set<AXUIElement>()
         var result = [RenderedItem]()
         var complete = true
@@ -815,7 +865,7 @@ enum HostedMenuBarBackend {
                     complete = false
                     return
                 }
-                if isMenuBarFrame(frame, displayBounds: displayBounds) {
+                if let displayID = matchingMenuBarDisplayID(for: frame, displays: displays) {
                     let strings: [String?] = [
                         attribute(kAXIdentifierAttribute, of: element),
                         attribute(kAXTitleAttribute, of: element),
@@ -825,6 +875,7 @@ enum HostedMenuBarBackend {
                     result.append(RenderedItem(
                         element: element,
                         pid: pid,
+                        displayID: displayID,
                         frame: frame,
                         identityStrings: Set(strings.compactMap { $0 }.filter { !$0.isEmpty })
                     ))
@@ -847,10 +898,14 @@ enum HostedMenuBarBackend {
         return complete && ContinuousClock.now < deadline ? result : nil
     }
 
-    private static func isMenuBarFrame(_ frame: CGRect, displayBounds: [CGRect]) -> Bool {
-        frame.width > 0 && frame.height > 0 && displayBounds.contains { bounds in
-            return frame.intersects(bounds) && frame.minY <= bounds.minY + 80
-        }
+    private static func matchingMenuBarDisplayID(
+        for frame: CGRect,
+        displays: [(displayID: CGDirectDisplayID, bounds: CGRect)]
+    ) -> CGDirectDisplayID? {
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        return displays.first { display in
+            frame.intersects(display.bounds) && frame.minY <= display.bounds.minY + 80
+        }?.displayID
     }
 
     /// Resolves the global frame of a hosted item by hit-testing the real menu

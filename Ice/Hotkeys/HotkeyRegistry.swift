@@ -60,6 +60,15 @@ final class HotkeyRegistry {
 
     private var cancellables = Set<AnyCancellable>()
 
+    deinit {
+        for id in Array(registrations.keys) {
+            retainedUnregister(id)
+        }
+        if let eventHandlerRef {
+            RemoveEventHandler(eventHandlerRef)
+        }
+    }
+
     /// Installs the global event handler reference, if it isn't already installed.
     private func installIfNeeded() -> OSStatus {
         guard eventHandlerRef == nil else {
@@ -188,7 +197,10 @@ final class HotkeyRegistry {
             Logger.hotkeyRegistry.error("No registered key combination for id \(id)")
             return
         }
-        let status = UnregisterEventHotKey(registration.hotKeyRef)
+        guard let hotKeyRef = registration.hotKeyRef else {
+            return
+        }
+        let status = UnregisterEventHotKey(hotKeyRef)
         guard status == noErr else {
             Logger.hotkeyRegistry.error("Hotkey unregistration failed with status \(status)")
             return

@@ -28,6 +28,12 @@ final class MenuBarManager: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Timer subscription for sampling the menu bar's average color while Settings is open.
+    private var averageColorTimerCancellable: AnyCancellable?
+
+    /// Reused panel for presenting the menu bar appearance editor popover.
+    private var appearanceEditorPanel: MenuBarAppearanceEditorPanel?
+
     /// A Boolean value that indicates whether the application menus are hidden.
     private var isHidingApplicationMenus = false
 
@@ -63,10 +69,18 @@ final class MenuBarManager: ObservableObject {
 
     /// Performs the initial setup of the menu bar manager.
     func performSetup() {
+        refreshSystemMenuBarHiddenDefaults()
         initializeSections()
         configureCancellables()
         iceBarPanel.performSetup()
         hostedItemVisibilityManager.performSetup()
+    }
+
+    private func refreshSystemMenuBarHiddenDefaults() {
+        let isHidden = (Defaults.globalDomain["_HIHideMenuBar"] as? Bool) ?? false
+        if isMenuBarHiddenBySystemUserDefaults != isHidden {
+            isMenuBarHiddenBySystemUserDefaults = isHidden
+        }
     }
 
     /// Performs the initial setup of the menu bar manager's sections.
@@ -101,25 +115,30 @@ final class MenuBarManager: ObservableObject {
                 }
                 let hidden = options.contains(.hideMenuBar) || options.contains(.autoHideMenuBar)
                 isMenuBarHiddenBySystem = hidden
+                refreshSystemMenuBarHiddenDefaults()
             }
             .store(in: &c)
 
+        Publishers.Merge(
+            NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification),
+            NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in
+            self?.refreshSystemMenuBarHiddenDefaults()
+        }
+        .store(in: &c)
+
         if
-            let hiddenSection = section(withName: .alwaysHidden),
-            let window = hiddenSection.controlItem.window
+            let visibleSection = section(withName: .visible),
+            let window = visibleSection.controlItem.window
         {
             window.publisher(for: \.frame)
                 .map { $0.origin.y }
                 .removeDuplicates()
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
-                    guard
-                        let self,
-                        let isMenuBarHidden = Defaults.globalDomain["_HIHideMenuBar"] as? Bool
-                    else {
-                        return
-                    }
-                    isMenuBarHiddenBySystemUserDefaults = isMenuBarHidden
+                    self?.refreshSystemMenuBarHiddenDefaults()
                 }
                 .store(in: &c)
         }
@@ -131,29 +150,49 @@ final class MenuBarManager: ObservableObject {
                 if
                     let self,
                     let appState,
+                    appState.settingsManager.generalSettingsManager.autoRehide,
                     case .focusedApp = appState.settingsManager.generalSettingsManager.rehideStrategy,
-                    let hiddenSection = section(withName: .hidden),
-                    !appState.eventManager.isMouseInsideMenuBar
+                    sections.contains(where: { !$0.isHidden }),
+                    !appState.eventManager.isMouseInsideMenuBar,
+                    !appState.eventManager.isMouseInsideIceBar
                 {
-                    Task {
+                    Task { @MainActor [weak self] in
                         do { try await Task.sleep(for: .seconds(0.1)) } catch { return }
-                        hiddenSection.hide()
+                        guard
+                            let self,
+                            let appState = self.appState,
+                            appState.settingsManager.generalSettingsManager.autoRehide,
+                            !appState.eventManager.isMouseInsideMenuBar,
+                            !appState.eventManager.isMouseInsideIceBar
+                        else {
+                            return
+                        }
+                        for section in self.sections {
+                            section.hide()
+                        }
                     }
                 }
             }
             .store(in: &c)
 
-        appState?.settingsWindow?.publisher(for: \.isVisible)
+        appState?.navigationState.$isSettingsPresented
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.updateAverageColorInfo()
-            }
-            .store(in: &c)
-
-        Timer.publish(every: 5, on: .main, in: .default)
-            .autoconnect()
-            .sink { [weak self] _ in
-                self?.updateAverageColorInfo()
+            .sink { [weak self] isPresented in
+                guard let self else {
+                    return
+                }
+                averageColorTimerCancellable?.cancel()
+                averageColorTimerCancellable = nil
+                guard isPresented else {
+                    return
+                }
+                updateAverageColorInfo()
+                averageColorTimerCancellable = Timer.publish(every: 5, on: .main, in: .default)
+                    .autoconnect()
+                    .sink { [weak self] _ in
+                        self?.updateAverageColorInfo()
+                    }
             }
             .store(in: &c)
 
@@ -169,16 +208,21 @@ final class MenuBarManager: ObservableObject {
                 }
 
                 // Don't continue if:
+                //   * Hosted menu bar visibility is active (dividers are virtual).
                 //   * The "HideApplicationMenus" setting isn't enabled.
                 //   * The menu bar is hidden by the system.
                 //   * The active space is fullscreen.
                 //   * The settings window is visible.
                 guard
+                    !HostedItemVisibilityManager.isSupported,
                     appState.settingsManager.advancedSettingsManager.hideApplicationMenus,
                     !isMenuBarHiddenBySystem,
                     !appState.isActiveSpaceFullscreen,
-                    appState.settingsWindow?.isVisible == false
+                    appState.settingsWindow?.isVisible != true
                 else {
+                    if isHidingApplicationMenus {
+                        showApplicationMenus()
+                    }
                     return
                 }
 
@@ -288,8 +332,12 @@ final class MenuBarManager: ObservableObject {
         guard let menuBarWindow = WindowInfo.getMenuBarWindow(from: windows, for: display) else {
             return false
         }
+        if HostedItemVisibilityManager.isSupported {
+            return true
+        }
         let position = menuBarWindow.frame.origin
         do {
+            systemWideElement.messagingTimeout = 0.05
             let uiElement = try systemWideElement.elementAtPosition(Float(position.x), Float(position.y))
             return try uiElement?.role() == .menuBar
         } catch {
@@ -517,7 +565,11 @@ final class MenuBarManager: ObservableObject {
             Logger.menuBarManager.error("Error showing appearance editor popover: Missing app state")
             return
         }
-        let panel = MenuBarAppearanceEditorPanel(appState: appState)
+        let panel = appearanceEditorPanel ?? {
+            let created = MenuBarAppearanceEditorPanel(appState: appState)
+            appearanceEditorPanel = created
+            return created
+        }()
         panel.orderFrontRegardless()
         panel.showAppearanceEditorPopover()
     }

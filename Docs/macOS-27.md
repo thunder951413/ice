@@ -44,12 +44,13 @@ not instantiated by this build.
    the registered `/Applications/Ice.app` retains its native Ice icon while the
    development copy in DerivedData was suppressed by the same restriction. No
    extra recovery button is displayed. Empty menu-bar space also toggles Ice Bar;
-   right-click that space for Settings and Show All. The original
+   right-click that space for Settings and Pause Hiding Menu Bar Items. The original
    Show Ice icon and custom-icon preferences remain available. With Ice Bar enabled,
    concealed apps appear in its floating panel. Selecting an item reveals its
    owner, reacquires its live AX element, and activates the original menu.
-4. Use General → Show All Hidden Items to clear Ice's assignments and release
-   the restriction. Quitting Ice also releases it.
+4. Use General → Menu bar recovery → Pause Hiding Menu Bar Items to temporarily
+   reveal all items without losing saved assignments, or Reset Menu Bar Layout…
+   to clear Ice's assignments and spacing. Quitting Ice also releases the restriction.
 
 Layout-editor dragging is disabled on macOS 27 after unreliable native drop
 callbacks were reproduced. Use its section menu for assignment and native
@@ -62,7 +63,9 @@ status item.
 The visibility assertion also prevents the system Clock from opening Notification
 Center. Ice releases that assertion for a Clock click and restores the saved
 hidden layout when Notification Center closes. Hidden icons may briefly appear
-while the panel is open.
+while the panel is open. macOS 27.2 can open the panel natively despite the
+assertion, so Ice first waits up to 500 ms for it and skips the bridge if it
+appears; pressing Clock again would close it.
 
 Hidden descriptors stay in Ice's cache while their owner is running, because
 native hiding can remove them from AX enumeration or leave stale source-app

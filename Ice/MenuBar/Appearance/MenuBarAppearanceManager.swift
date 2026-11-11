@@ -100,6 +100,19 @@ final class MenuBarAppearanceManager: ObservableObject {
             }
             .store(in: &c)
 
+        DistributedNotificationCenter.default()
+            .publisher(for: DistributedNotificationCenter.interfaceThemeChangedNotification)
+            .debounce(for: 0.1, scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, configuration.isDynamic else {
+                    return
+                }
+                if overlayPanels.isEmpty || !needsOverlayPanels(for: configuration) {
+                    configureOverlayPanels(with: configuration)
+                }
+            }
+            .store(in: &c)
+
         cancellables = c
     }
 

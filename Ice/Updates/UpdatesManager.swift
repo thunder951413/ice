@@ -3,6 +3,7 @@
 //  Ice
 //
 
+import Combine
 import Sparkle
 import SwiftUI
 
@@ -72,8 +73,10 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// Configures the internal observers for the manager.
     private func configureCancellables() {
         updater.publisher(for: \.canCheckForUpdates)
+            .receive(on: DispatchQueue.main)
             .assign(to: &$canCheckForUpdates)
         updater.publisher(for: \.lastUpdateCheckDate)
+            .receive(on: DispatchQueue.main)
             .assign(to: &$lastUpdateCheckDate)
     }
 
@@ -89,7 +92,6 @@ final class UpdatesManager: NSObject, ObservableObject {
             return
         }
         // Activate the app in case an alert needs to be displayed.
-        appState.activate(withPolicy: .regular)
         appState.openSettingsWindow()
         updater.checkForUpdates()
         #endif
@@ -97,15 +99,8 @@ final class UpdatesManager: NSObject, ObservableObject {
 }
 
 // MARK: UpdatesManager: SPUUpdaterDelegate
-extension UpdatesManager: @preconcurrency SPUUpdaterDelegate {
-    func updater(_ updater: SPUUpdater, willScheduleUpdateCheckAfterDelay delay: TimeInterval) {
-        guard let appState else {
-            return
-        }
-        appState.userNotificationManager.requestAuthorization()
-    }
-
-    func updater(
+extension UpdatesManager: SPUUpdaterDelegate {
+    nonisolated func updater(
         _ updater: SPUUpdater,
         willDownloadUpdate item: SUAppcastItem,
         with request: NSMutableURLRequest
@@ -137,7 +132,8 @@ extension UpdatesManager: @preconcurrency SPUStandardUserDriverDelegate {
         guard let appState else {
             return
         }
-        if !state.userInitiated {
+        if !handleShowingUpdate, !state.userInitiated {
+            appState.userNotificationManager.requestAuthorization()
             appState.userNotificationManager.addRequest(
                 with: .updateCheck,
                 title: "A new update is available",
