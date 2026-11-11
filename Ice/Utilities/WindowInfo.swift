@@ -7,76 +7,35 @@ import Cocoa
 
 /// Information for a window.
 struct WindowInfo {
-    /// The window identifier associated with the window.
     let windowID: CGWindowID
-
-    /// The frame of the window.
-    ///
-    /// The frame is specified in screen coordinates, where the origin
-    /// is at the upper left corner of the main display.
     let frame: CGRect
-
-    /// The title of the window.
     let title: String?
-
-    /// The layer number of the window.
     let layer: Int
-
-    /// The alpha value of the window, ranging from `0.0` to `1.0`,
-    /// where `0.0` is fully transparent, and `1.0` is fully opaque.
     let alpha: Double
-
-    /// The process identifier of the application that owns the window.
     let ownerPID: pid_t
-
-    /// The name of the application that owns the window.
-    ///
-    /// This may have a value when ``owningApplication`` does not have a
-    /// localized name.
     let ownerName: String?
-
-    /// The sharing mode used by the window.
     let sharingState: CGWindowSharingType
-
-    /// The backing type of the window.
     let backingStoreType: CGWindowBackingType
-
-    /// An estimate of the amount of memory in bytes used by the window.
     let memoryUsage: Measurement<UnitInformationStorage>
-
-    /// A Boolean value that indicates whether the window is on screen.
     let isOnScreen: Bool
-
-    /// A Boolean value that indicates whether the window's backing store
-    /// is located in video memory.
     let isBackedByVideoMemory: Bool
 
-    /// The application that owns the window.
     var owningApplication: NSRunningApplication? {
         NSRunningApplication(processIdentifier: ownerPID)
     }
 
-    /// A Boolean value that indicates whether the window represents a
-    /// menu bar item.
     var isMenuBarItem: Bool {
         layer == kCGStatusWindowLevel
     }
 
-    /// A Boolean value that indicates whether the window belongs to the
-    /// window server.
     var isWindowServerWindow: Bool {
         ownerName == "Window Server"
     }
 
-    /// A Boolean value that indicates whether the window is on the active space.
     var isOnActiveSpace: Bool {
         Bridging.isWindowOnActiveSpace(windowID)
     }
 
-    /// Creates a structural window description for an accessibility-hosted menu
-    /// bar item. The identifier remains a real WindowServer identifier when one
-    /// is available; otherwise the null identifier is used only as metadata and
-    /// never sent to WindowServer operations.
     init(hostedItem: HostedMenuBarItemHandle) {
         self.windowID = hostedItem.windowID ?? kCGNullWindowID
         self.frame = hostedItem.initialFrame
@@ -85,17 +44,15 @@ struct WindowInfo {
         self.alpha = 1
         self.ownerPID = hostedItem.sourcePID
         self.ownerName = NSRunningApplication(processIdentifier: hostedItem.sourcePID)?.localizedName
-        self.sharingState = CGWindowSharingType(rawValue: 1)! // swiftlint:disable:this force_unwrapping
+        self.sharingState = CGWindowSharingType(rawValue: 1) ?? .none
         self.backingStoreType = .backingStoreBuffered
         self.memoryUsage = Measurement(value: 0, unit: .bytes)
         self.isOnScreen = NSScreen.screens.contains { screen in
-            let bounds = CGDisplayBounds(screen.displayID)
-            return bounds.intersects(hostedItem.initialFrame)
+            CGDisplayBounds(screen.displayID).intersects(hostedItem.initialFrame)
         }
         self.isBackedByVideoMemory = false
     }
 
-    /// Creates a window with the given dictionary.
     private init?(dictionary: CFDictionary) {
         guard
             let info = dictionary as? [CFString: CFTypeRef],
@@ -126,179 +83,33 @@ struct WindowInfo {
         self.isOnScreen = info[kCGWindowIsOnscreen] as? Bool ?? false
         self.isBackedByVideoMemory = info[kCGWindowBackingLocationVideoMemory] as? Bool ?? false
     }
-
-    /// Creates a window with the given window identifier.
-    init?(windowID: CGWindowID) {
-        var pointer = UnsafeRawPointer(bitPattern: Int(windowID))
-        guard
-            let array = CFArrayCreate(kCFAllocatorDefault, &pointer, 1, nil),
-            let list = CGWindowListCreateDescriptionFromArray(array) as? [CFDictionary],
-            let dictionary = list.first
-        else {
-            return nil
-        }
-        self.init(dictionary: dictionary)
-    }
 }
 
 // MARK: - WindowList Operations
 
-// MARK: Private
 extension WindowInfo {
-    /// Options to use to retrieve on screen windows.
-    private enum OnScreenWindowListOption {
-        case above(_ window: WindowInfo, includeWindow: Bool)
-        case below(_ window: WindowInfo, includeWindow: Bool)
-        case onScreenOnly
-    }
-
-    /// A context that contains the information needed to retrieve a window list.
-    private struct WindowListContext {
-        let windowListOption: CGWindowListOption
-        let referenceWindow: WindowInfo?
-
-        init(windowListOption: CGWindowListOption, referenceWindow: WindowInfo?) {
-            self.windowListOption = windowListOption
-            self.referenceWindow = referenceWindow
-        }
-
-        init(onScreenOption: OnScreenWindowListOption, excludeDesktopWindows: Bool) {
-            var windowListOption: CGWindowListOption = []
-            var referenceWindow: WindowInfo?
-            switch onScreenOption {
-            case .above(let window, let includeWindow):
-                windowListOption.insert(.optionOnScreenAboveWindow)
-                if includeWindow {
-                    windowListOption.insert(.optionIncludingWindow)
-                }
-                referenceWindow = window
-            case .below(let window, let includeWindow):
-                windowListOption.insert(.optionOnScreenBelowWindow)
-                if includeWindow {
-                    windowListOption.insert(.optionIncludingWindow)
-                }
-                referenceWindow = window
-            case .onScreenOnly:
-                windowListOption.insert(.optionOnScreenOnly)
-            }
-            if excludeDesktopWindows {
-                windowListOption.insert(.excludeDesktopElements)
-            }
-            self.init(windowListOption: windowListOption, referenceWindow: referenceWindow)
-        }
-    }
-
-    /// Retrieves a copy of the current window list as an array of dictionaries.
-    private static func copyWindowListArray(context: WindowListContext) -> [CFDictionary] {
-        let option = context.windowListOption
-        let windowID = context.referenceWindow?.windowID ?? kCGNullWindowID
-        guard let list = CGWindowListCopyWindowInfo(option, windowID) as? [CFDictionary] else {
-            return []
-        }
-        return list
-    }
-
-    /// Returns the current window list using the given context.
-    private static func getWindowList(context: WindowListContext) -> [WindowInfo] {
-        let list = copyWindowListArray(context: context)
-        return list.compactMap { WindowInfo(dictionary: $0) }
-    }
-}
-
-// MARK: All Windows
-extension WindowInfo {
-    /// Returns the current windows.
-    ///
-    /// - Parameter excludeDesktopWindows: A Boolean value that indicates whether
-    ///   to exclude desktop owned windows, such as the wallpaper and desktop icons.
-    static func getAllWindows(excludeDesktopWindows: Bool = false) -> [WindowInfo] {
-        var option = CGWindowListOption.optionAll
+    static func getOnScreenWindows(excludeDesktopWindows: Bool = false) -> [WindowInfo] {
+        var option: CGWindowListOption = [.optionOnScreenOnly]
         if excludeDesktopWindows {
             option.insert(.excludeDesktopElements)
         }
-        let context = WindowListContext(windowListOption: option, referenceWindow: nil)
-        return getWindowList(context: context)
-    }
-}
-
-// MARK: On Screen Windows
-extension WindowInfo {
-    /// Returns the on screen windows.
-    ///
-    /// - Parameter excludeDesktopWindows: A Boolean value that indicates whether
-    ///   to exclude desktop owned windows, such as the wallpaper and desktop icons.
-    static func getOnScreenWindows(excludeDesktopWindows: Bool = false) -> [WindowInfo] {
-        let context = WindowListContext(
-            onScreenOption: .onScreenOnly,
-            excludeDesktopWindows: excludeDesktopWindows
-        )
-        return getWindowList(context: context)
+        guard let list = CGWindowListCopyWindowInfo(option, kCGNullWindowID) as? [CFDictionary] else {
+            return []
+        }
+        return list.compactMap { WindowInfo(dictionary: $0) }
     }
 
-    /// Returns the on screen windows above the given window.
-    ///
-    /// - Parameters:
-    ///   - window: The window to use as a reference point when determining which
-    ///     windows to return.
-    ///   - includeWindow: A Boolean value that indicates whether to include the
-    ///     window in the result.
-    ///   - excludeDesktopWindows: A Boolean value that indicates whether to exclude
-    ///     desktop owned windows, such as the wallpaper and desktop icons.
-    static func getOnScreenWindows(
-        above window: WindowInfo,
-        includeWindow: Bool = false,
-        excludeDesktopWindows: Bool = false
-    ) -> [WindowInfo] {
-        let context = WindowListContext(
-            onScreenOption: .above(window, includeWindow: includeWindow),
-            excludeDesktopWindows: excludeDesktopWindows
-        )
-        return getWindowList(context: context)
-    }
-
-    /// Returns the on screen windows below the given window.
-    ///
-    /// - Parameters:
-    ///   - window: The window to use as a reference point when determining which
-    ///     windows to return.
-    ///   - includeWindow: A Boolean value that indicates whether to include the
-    ///     window in the result.
-    ///   - excludeDesktopWindows: A Boolean value that indicates whether to exclude
-    ///     desktop owned windows, such as the wallpaper and desktop icons.
-    static func getOnScreenWindows(
-        below window: WindowInfo,
-        includeWindow: Bool = false,
-        excludeDesktopWindows: Bool = false
-    ) -> [WindowInfo] {
-        let context = WindowListContext(
-            onScreenOption: .below(window, includeWindow: includeWindow),
-            excludeDesktopWindows: excludeDesktopWindows
-        )
-        return getWindowList(context: context)
-    }
-}
-
-// MARK: Wallpaper Window
-extension WindowInfo {
-    /// Returns the wallpaper window in the given windows for the given display.
-    static func getWallpaperWindow(from windows: [WindowInfo], for display: CGDirectDisplayID) -> WindowInfo? {
-        windows.first(where: Predicates.wallpaperWindow(for: display))
-    }
-
-    /// Returns the wallpaper window for the given display.
-    static func getWallpaperWindow(for display: CGDirectDisplayID) -> WindowInfo? {
-        getWallpaperWindow(from: getOnScreenWindows(), for: display)
-    }
-}
-
-// MARK: Menu Bar Window
-extension WindowInfo {
-    /// Returns the menu bar window for the given display.
     static func getMenuBarWindow(from windows: [WindowInfo], for display: CGDirectDisplayID) -> WindowInfo? {
-        windows.first(where: Predicates.menuBarWindow(for: display))
+        let displayBounds = CGDisplayBounds(display)
+        return windows.first { window in
+            window.isWindowServerWindow &&
+                window.isOnScreen &&
+                window.layer == kCGMainMenuWindowLevel &&
+                (window.title == "Menubar" || (abs(window.frame.width - displayBounds.width) <= 2 && window.frame.height <= 80)) &&
+                displayBounds.intersects(window.frame)
+        }
     }
 
-    /// Returns the menu bar window for the given display.
     static func getMenuBarWindow(for display: CGDirectDisplayID) -> WindowInfo? {
         getMenuBarWindow(from: getOnScreenWindows(excludeDesktopWindows: true), for: display)
     }
@@ -308,17 +119,17 @@ extension WindowInfo {
 extension WindowInfo: Equatable {
     static func == (lhs: WindowInfo, rhs: WindowInfo) -> Bool {
         lhs.windowID == rhs.windowID &&
-        NSStringFromRect(lhs.frame) == NSStringFromRect(rhs.frame) &&
-        lhs.title == rhs.title &&
-        lhs.layer == rhs.layer &&
-        lhs.alpha == rhs.alpha &&
-        lhs.ownerPID == rhs.ownerPID &&
-        lhs.ownerName == rhs.ownerName &&
-        lhs.sharingState == rhs.sharingState &&
-        lhs.backingStoreType == rhs.backingStoreType &&
-        lhs.memoryUsage == rhs.memoryUsage &&
-        lhs.isOnScreen == rhs.isOnScreen &&
-        lhs.isBackedByVideoMemory == rhs.isBackedByVideoMemory
+            NSStringFromRect(lhs.frame) == NSStringFromRect(rhs.frame) &&
+            lhs.title == rhs.title &&
+            lhs.layer == rhs.layer &&
+            lhs.alpha == rhs.alpha &&
+            lhs.ownerPID == rhs.ownerPID &&
+            lhs.ownerName == rhs.ownerName &&
+            lhs.sharingState == rhs.sharingState &&
+            lhs.backingStoreType == rhs.backingStoreType &&
+            lhs.memoryUsage == rhs.memoryUsage &&
+            lhs.isOnScreen == rhs.isOnScreen &&
+            lhs.isBackedByVideoMemory == rhs.isBackedByVideoMemory
     }
 }
 

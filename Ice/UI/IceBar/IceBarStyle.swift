@@ -15,8 +15,8 @@ enum IceBarStyle: Int, CaseIterable, Identifiable {
     /// Localized string key representation.
     var localized: LocalizedStringKey {
         switch self {
-        case .frosted: "Frosted"
-        case .solid: "Solid"
+        case .frosted: "磨砂毛玻璃"
+        case .solid: "纯色面板"
         }
     }
 }

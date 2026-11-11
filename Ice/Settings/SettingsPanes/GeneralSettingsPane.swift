@@ -13,7 +13,7 @@ struct GeneralSettingsPane: View {
         var errorDescription: String? {
             switch self {
             case .invalidImageData:
-                "The selected file could not be loaded as an image."
+                "所选文件无法识别为有效图片。"
             }
         }
     }
@@ -24,38 +24,15 @@ struct GeneralSettingsPane: View {
     @State private var isPresentingError = false
     @State private var presentedError: LocalizedErrorWrapper?
     @State private var isApplyingOffset = false
-    @State private var tempItemSpacingOffset: CGFloat = 0 // Temporary state for the slider
-    @State private var isConfirmingLayoutReset = false
+    @State private var tempItemSpacingOffset: CGFloat = 0
     @State private var isConfirmingSpacingApply = false
 
     private var manager: GeneralSettingsManager {
         appState.settingsManager.generalSettingsManager
     }
 
-    private var itemSpacingOffset: LocalizedStringKey {
-        localizedOffsetString(for: manager.itemSpacingOffset)
-    }
-
-    private func localizedOffsetString(for offset: CGFloat) -> LocalizedStringKey {
-        switch offset {
-        case -16:
-            return LocalizedStringKey("none")
-        case 0:
-            return LocalizedStringKey("default")
-        case 16:
-            return LocalizedStringKey("max")
-        default:
-            return LocalizedStringKey(offset.formatted())
-        }
-    }
-
-    private var rehideIntervalKey: LocalizedStringKey {
-        let formatted = manager.rehideInterval.formatted()
-        if manager.rehideInterval == 1 {
-            return LocalizedStringKey(formatted + " second")
-        } else {
-            return LocalizedStringKey(formatted + " seconds")
-        }
+    private var accessibilityPermission: AccessibilityPermission {
+        appState.permissionsManager.accessibilityPermission
     }
 
     private var hasSpacingSliderValueChanged: Bool {
@@ -66,72 +43,77 @@ struct GeneralSettingsPane: View {
         manager.itemSpacingOffset != 0
     }
 
+    private func localizedOffsetString(for offset: CGFloat) -> LocalizedStringKey {
+        switch offset {
+        case -16:
+            return LocalizedStringKey("最紧凑 (-16)")
+        case 0:
+            return LocalizedStringKey("系统默认 (0)")
+        case 16:
+            return LocalizedStringKey("最宽松 (+16)")
+        default:
+            let sign = offset > 0 ? "+" : ""
+            return LocalizedStringKey("\(sign)\(Int(offset))")
+        }
+    }
+
+    private func secondsLabel(_ seconds: TimeInterval) -> LocalizedStringKey {
+        if seconds == 0 {
+            return LocalizedStringKey("关闭菜单后立即回隐")
+        }
+        return LocalizedStringKey("\(Int(seconds)) 秒")
+    }
+
     var body: some View {
         IceForm {
-            IceSection {
-                launchAtLogin
+            IceSection("启动与权限") {
+                launchAtLoginRow
+                accessibilityPermissionRow
             }
-            IceSection {
+            IceSection("菜单栏入口与点击操作") {
                 iceIconOptions
+                Toggle("左键点击菜单栏空白处展开隐藏图标", isOn: manager.bindings.showOnClick)
+                    .annotation("点击应用菜单与右侧状态图标之间的空白区域即可呼出或收起 Ice Bar")
+                Toggle("右键点击菜单栏空白处打开快捷菜单", isOn: manager.bindings.showContextMenuOnRightClick)
+                    .annotation("即使隐藏了菜单栏上的 Ice 图标，也能随时右键空白处打开设置")
             }
-            IceSection {
-                iceBarOptions
+            IceSection("Ice Bar 悬浮面板") {
+                iceBarStylePicker
+                iceBarLocationPicker
+                iceBarSizingOptions
             }
-            IceSection {
-                Toggle("Enable menu bar search", isOn: manager.bindings.enableMenuBarSearch)
-                    .annotation("Search menu bar icons only. Turning this off hides search commands and disables its shortcut.")
-            }
-            IceSection {
-                showOnClick
-                showOnHover
-                showOnScroll
-            }
-            IceSection {
+            IceSection("自动收起与回隐") {
                 autoRehideOptions
+                tempShowIntervalRow
             }
-            IceSection {
+            IceSection("系统菜单栏间距") {
                 spacingOptions
-            }
-            IceSection {
-                recoverOptions
             }
         }
         .alert(isPresented: $isPresentingError, error: presentedError) {
-            Button("OK") {
+            Button("好") {
                 presentedError = nil
                 isPresentingError = false
             }
         }
         .confirmationDialog(
-            "Reset menu bar layout?",
-            isPresented: $isConfirmingLayoutReset,
-            titleVisibility: .visible
-        ) {
-            Button("Reset Menu Bar Layout", role: .destructive) {
-                appState.menuBarManager.resetModifications()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This reveals all items, restores default spacing, and clears Ice's saved item arrangement.")
-        }
-        .confirmationDialog(
-            "Apply menu bar item spacing?",
+            "应用新的系统菜单栏图标间距？",
             isPresented: $isConfirmingSpacingApply,
             titleVisibility: .visible
         ) {
-            Button("Apply and Restart Apps") {
+            Button("应用并重启菜单栏应用") {
                 applyOffset()
             }
-            Button("Cancel", role: .cancel) { }
+            Button("取消", role: .cancel) { }
         } message: {
-            Text("Apps with menu bar items will be asked to quit and reopen.")
+            Text("包含菜单栏图标的应用将收到正常退出并重开的请求；若有未保存内容，对应应用会保持运行。")
         }
     }
 
     @ViewBuilder
-    private var launchAtLogin: some View {
+    private var launchAtLoginRow: some View {
         Toggle(
-            "Launch at login",
+            "登录时自动启动 Ice",
             isOn: Binding(
                 get: { loginItemManager.isEnabled },
                 set: { loginItemManager.setEnabled($0) }
@@ -141,33 +123,63 @@ struct GeneralSettingsPane: View {
             VStack(alignment: .leading, spacing: 6) {
                 switch loginItemManager.status {
                 case .requiresApproval:
-                    Text("Allow Ice in System Settings to finish enabling launch at login.")
-                    Button("Open Login Item Settings") {
+                    Text("请在“系统设置 > 通用 > 登录项”中允许 Ice 在后台运行。")
+                    Button("打开登录项设置…") {
                         loginItemManager.openSystemSettings()
                     }
                 case .notFound:
-                    Text("Ice could not find its login item registration. Move Ice to Applications and try again.")
+                    Text("未找到登录项注册信息，请将 Ice 移入“应用程序”文件夹后重试。")
                 case .enabled, .notRegistered:
                     EmptyView()
                 }
 
                 if let errorMessage = loginItemManager.errorMessage {
                     Text(errorMessage)
+                        .foregroundStyle(.orange)
                 }
             }
         }
         .onAppear {
             loginItemManager.refresh()
+            appState.permissionsManager.refreshPermissions()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             loginItemManager.refresh()
+            appState.permissionsManager.refreshPermissions()
         }
+    }
+
+    @ViewBuilder
+    private var accessibilityPermissionRow: some View {
+        IceLabeledContent {
+            HStack(spacing: 10) {
+                if accessibilityPermission.hasPermission {
+                    Label("已授权", systemImage: "checkmark.circle.fill")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.green)
+                } else {
+                    Label("未授权", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.orange)
+                }
+                Button(accessibilityPermission.hasPermission ? "系统设置…" : "前往授权…") {
+                    if accessibilityPermission.hasPermission {
+                        accessibilityPermission.openSystemSettings()
+                    } else {
+                        accessibilityPermission.performRequest()
+                    }
+                }
+            }
+        } label: {
+            Text("辅助功能权限")
+        }
+        .annotation("用于读取菜单栏图标列表及点击唤醒隐藏图标，无需屏幕录制权限")
     }
 
     @ViewBuilder
     private func menuItem(for imageSet: ControlItemImageSet) -> some View {
         Label {
-            Text(imageSet.name.rawValue)
+            Text(imageSet.name.localizedTitle)
         } icon: {
             if let nsImage = imageSet.hidden.nsImage(for: appState) {
                 switch imageSet.name {
@@ -187,15 +199,15 @@ struct GeneralSettingsPane: View {
 
     @ViewBuilder
     private var iceIconOptions: some View {
-        Toggle("Show Ice icon", isOn: manager.bindings.showIceIcon)
+        Toggle("在菜单栏显示 Ice 图标", isOn: manager.bindings.showIceIcon)
             .annotation {
                 if !manager.showIceIcon {
-                    Text("You can still access Ice's settings by right-clicking an empty area in the menu bar")
+                    Text("已隐藏 Ice 图标；可点击菜单栏空白处呼出面板，或右键空白处打开设置")
                 }
             }
         if manager.showIceIcon {
-            IceMenu("Ice icon") {
-                Picker("Ice icon", selection: manager.bindings.iceIcon) {
+            IceMenu("Ice 图标样式") {
+                Picker("Ice 图标样式", selection: manager.bindings.iceIcon) {
                     ForEach(ControlItemImageSet.userSelectableIceIcons) { imageSet in
                         Button {
                             manager.iceIcon = imageSet
@@ -218,13 +230,12 @@ struct GeneralSettingsPane: View {
 
                 Divider()
 
-                Button("Choose image…") {
+                Button("选择自定义图片…") {
                     isImportingCustomIceIcon = true
                 }
             } title: {
                 menuItem(for: manager.iceIcon)
             }
-            .annotation("Choose a custom icon to show in the menu bar")
             .fileImporter(
                 isPresented: $isImportingCustomIceIcon,
                 allowedContentTypes: [.image]
@@ -249,32 +260,24 @@ struct GeneralSettingsPane: View {
             }
 
             if case .custom = manager.iceIcon.name {
-                Toggle("Apply system theme to icon", isOn: manager.bindings.customIceIconIsTemplate)
-                    .annotation("Display the icon as a monochrome image matching the system appearance")
+                Toggle("将自定义图标设为系统单色模板", isOn: manager.bindings.customIceIconIsTemplate)
+                    .annotation("自动跟随浅色 / 深色菜单栏切换黑白单色效果")
             }
         }
     }
 
     @ViewBuilder
-    private var iceBarOptions: some View {
-        useIceBar
-        if manager.useIceBar {
-            iceBarLocationPicker
-            iceBarStylePicker
-            iceBarSizingOptions
-            showIceBarButton
+    private var iceBarStylePicker: some View {
+        IcePicker("面板外观", selection: manager.bindings.iceBarStyle) {
+            ForEach(IceBarStyle.allCases) { style in
+                Text(style.localized).tag(style)
+            }
         }
     }
 
     @ViewBuilder
-    private var useIceBar: some View {
-        Toggle("Use Ice Bar", isOn: manager.bindings.useIceBar)
-            .annotation("Show hidden menu bar items in a separate bar below the menu bar")
-    }
-
-    @ViewBuilder
     private var iceBarLocationPicker: some View {
-        IcePicker("Location", selection: manager.bindings.iceBarLocation) {
+        IcePicker("弹出位置", selection: manager.bindings.iceBarLocation) {
             ForEach(IceBarLocation.allCases) { location in
                 Text(location.localized).tag(location)
             }
@@ -282,23 +285,13 @@ struct GeneralSettingsPane: View {
         .annotation {
             switch manager.iceBarLocation {
             case .dynamic:
-                Text("The Ice Bar's location changes based on context")
+                Text("点击 Ice 图标时在其正下方展开，点击空白菜单栏时在鼠标下方展开")
             case .mousePointer:
-                Text("The Ice Bar is centered below the mouse pointer")
+                Text("始终在当前鼠标指针正下方居中展开")
             case .iceIcon:
-                Text("The Ice Bar is centered below the Ice icon")
+                Text("始终对齐菜单栏上的 Ice 图标正下方展开")
             }
         }
-    }
-
-    @ViewBuilder
-    private var iceBarStylePicker: some View {
-        IcePicker("Appearance", selection: manager.bindings.iceBarStyle) {
-            ForEach(IceBarStyle.allCases) { style in
-                Text(style.localized).tag(style)
-            }
-        }
-        .annotation("The Ice Bar's appearance is independent of the menu bar background")
     }
 
     @ViewBuilder
@@ -307,75 +300,106 @@ struct GeneralSettingsPane: View {
             HStack(spacing: 10) {
                 SwiftUI.Slider(value: manager.bindings.iceBarIconSize, in: 16...36, step: 1)
                     .labelsHidden()
-                    .accessibilityLabel("Icon size")
+                    .accessibilityLabel("图标大小")
                 Text("\(manager.iceBarIconSize.formatted()) pt")
                     .monospacedDigit()
-                    .frame(width: 42, alignment: .trailing)
+                    .frame(width: 46, alignment: .trailing)
             }
             .frame(width: 240)
         } label: {
-            Text("Icon size")
+            Text("图标大小")
         }
 
         IceLabeledContent {
             HStack(spacing: 10) {
                 SwiftUI.Slider(value: manager.bindings.iceBarItemSpacing, in: 0...12, step: 1)
                     .labelsHidden()
-                    .accessibilityLabel("Icon spacing")
+                    .accessibilityLabel("图标间距")
                 Text("\(manager.iceBarItemSpacing.formatted()) pt")
                     .monospacedDigit()
-                    .frame(width: 42, alignment: .trailing)
+                    .frame(width: 46, alignment: .trailing)
             }
             .frame(width: 240)
         } label: {
-            Text("Icon spacing")
+            Text("图标间距")
         }
 
         IceLabeledContent {
             HStack(spacing: 10) {
                 SwiftUI.Slider(value: manager.bindings.iceBarPadding, in: 2...12, step: 1)
                     .labelsHidden()
-                    .accessibilityLabel("Background padding")
+                    .accessibilityLabel("面板内边距")
                 Text("\(manager.iceBarPadding.formatted()) pt")
                     .monospacedDigit()
-                    .frame(width: 42, alignment: .trailing)
+                    .frame(width: 46, alignment: .trailing)
             }
             .frame(width: 240)
         } label: {
-            Text("Background padding")
+            Text("面板内边距")
         }
 
-        Button("Reset sizes") {
-            manager.iceBarIconSize = GeneralSettingsManager.defaultIceBarIconSize
-            manager.iceBarItemSpacing = GeneralSettingsManager.defaultIceBarItemSpacing
-            manager.iceBarPadding = GeneralSettingsManager.defaultIceBarPadding
-        }
-        .annotation("Adjust the Ice Bar's icon and background dimensions")
-    }
-
-    @ViewBuilder
-    private var showIceBarButton: some View {
-        Button("Show Ice Bar") {
-            appState.menuBarManager.section(withName: .hidden)?.show()
+        HStack(spacing: 10) {
+            Button("恢复默认尺寸") {
+                manager.iceBarIconSize = GeneralSettingsManager.defaultIceBarIconSize
+                manager.iceBarItemSpacing = GeneralSettingsManager.defaultIceBarItemSpacing
+                manager.iceBarPadding = GeneralSettingsManager.defaultIceBarPadding
+            }
+            Button("预览 Ice Bar") {
+                appState.menuBarManager.section(withName: .hidden)?.show()
+            }
         }
     }
 
     @ViewBuilder
-    private var showOnClick: some View {
-        Toggle("Show on click", isOn: manager.bindings.showOnClick)
-            .annotation("Click inside an empty area of the menu bar to show hidden menu bar items")
+    private var autoRehideOptions: some View {
+        Toggle("自动收起 Ice Bar", isOn: manager.bindings.autoRehide)
+        if manager.autoRehide {
+            IcePicker("收起策略", selection: manager.bindings.rehideStrategy) {
+                ForEach(RehideStrategy.allCases) { strategy in
+                    Text(strategy.localized).tag(strategy)
+                }
+            }
+            .annotation {
+                switch manager.rehideStrategy {
+                case .smart:
+                    Text("点击桌面或其他应用窗口时自动关闭 Ice Bar")
+                case .timed:
+                    Text("鼠标移出菜单栏与 Ice Bar 指定时间后自动关闭")
+                case .focusedApp:
+                    Text("当前前台焦点应用切换时自动关闭")
+                }
+            }
+
+            if case .timed = manager.rehideStrategy {
+                IceLabeledContent {
+                    IceSlider(
+                        LocalizedStringKey("\(Int(manager.rehideInterval)) 秒"),
+                        value: manager.bindings.rehideInterval,
+                        in: 1...30,
+                        step: 1
+                    )
+                    .frame(width: 240)
+                } label: {
+                    Text("定时收起等待")
+                }
+            }
+        }
     }
 
     @ViewBuilder
-    private var showOnHover: some View {
-        Toggle("Show on hover", isOn: manager.bindings.showOnHover)
-            .annotation("Hover over an empty area of the menu bar to show hidden menu bar items")
-    }
-
-    @ViewBuilder
-    private var showOnScroll: some View {
-        Toggle("Show on scroll", isOn: manager.bindings.showOnScroll)
-            .annotation("Scroll or swipe in the menu bar to toggle hidden menu bar items")
+    private var tempShowIntervalRow: some View {
+        IceLabeledContent {
+            IceSlider(
+                secondsLabel(manager.tempShowInterval),
+                value: manager.bindings.tempShowInterval,
+                in: 0...30,
+                step: 1
+            )
+            .frame(width: 240)
+        } label: {
+            Text("临时唤醒保留时长")
+        }
+        .annotation("在 Ice Bar 中点击某个隐藏图标后，该图标会在系统菜单栏临时显现直至其弹出菜单关闭，并额外保留所设时长")
     }
 
     @ViewBuilder
@@ -388,12 +412,12 @@ struct GeneralSettingsPane: View {
                 step: 2
             )
             .disabled(isApplyingOffset)
+            .frame(width: 240)
         } label: {
             IceLabeledContent {
-                Button("Apply") {
+                Button("应用") {
                     isConfirmingSpacingApply = true
                 }
-                .help("Apply the current spacing")
                 .disabled(isApplyingOffset || !hasSpacingSliderValueChanged)
 
                 if isApplyingOffset {
@@ -408,31 +432,15 @@ struct GeneralSettingsPane: View {
                         Image(systemName: "arrow.counterclockwise.circle.fill")
                     }
                     .buttonStyle(.borderless)
-                    .help("Reset to the default spacing")
-                    .accessibilityLabel("Reset to the default spacing")
+                    .help("恢复系统默认间距")
+                    .accessibilityLabel("恢复系统默认间距")
                     .disabled(isApplyingOffset || !isActualOffsetDifferentFromDefault)
                 }
             } label: {
-                HStack {
-                    Text("Menu bar item spacing")
-                    BetaBadge()
-                }
+                Text("系统菜单栏图标间距")
             }
         }
-        .annotation(
-            "Applying this setting asks apps with menu bar items to quit and reopen. Apps waiting for saving or declining to quit stay running and can be restarted manually.",
-            spacing: 2
-        )
-        .annotation(spacing: 10, font: .callout.bold()) {
-            IceGroupBox {
-                Label {
-                    Text("Note: You may need to log out and back in for this setting to apply properly.")
-                } icon: {
-                    Image(systemName: "exclamationmark.circle")
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
+        .annotation("调整全局菜单栏状态图标紧凑度；部分系统图标可能需要注销并重新登录才完全生效")
         .onAppear {
             tempItemSpacingOffset = manager.itemSpacingOffset
         }
@@ -443,94 +451,20 @@ struct GeneralSettingsPane: View {
         }
     }
 
-    @ViewBuilder
-    private var recoverOptions: some View {
-        HStack(alignment: .top) {
-            Text("Menu bar recovery")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(0)
-
-            VStack(alignment: .trailing, spacing: 8) {
-                Button(appState.menuBarManager.isHidingPaused ? "Resume Hiding Menu Bar Items" : "Pause Hiding Menu Bar Items") {
-                    appState.menuBarManager.toggleHidingPaused()
-                }
-                .accessibilityLabel(appState.menuBarManager.isHidingPaused ? "Resume hiding menu bar items" : "Pause hiding menu bar items")
-                .accessibilityHint(
-                    appState.menuBarManager.isHidingPaused
-                        ? "Restores the menu bar hiding state from before the pause"
-                        : "Temporarily reveals items without changing the saved menu bar layout"
-                )
-
-                Button("Reset Menu Bar Layout…", role: .destructive) {
-                    isConfirmingLayoutReset = true
-                }
-                .accessibilityLabel("Reset menu bar layout")
-                .accessibilityHint("Opens a confirmation before resetting the saved layout and spacing")
-            }
-            .layoutPriority(1)
-            .accessibilityElement(children: .contain)
-        }
-        .accessibilityElement(children: .contain)
-        .annotation(
-            "Pause hiding temporarily to recover items, or reset the saved layout and spacing if items remain inaccessible."
-        )
-    }
-
-    @ViewBuilder
-    private var rehideStrategyPicker: some View {
-        IcePicker("Strategy", selection: manager.bindings.rehideStrategy) {
-            ForEach(RehideStrategy.allCases) { strategy in
-                Text(strategy.localized).tag(strategy)
-            }
-        }
-        .annotation {
-            switch manager.rehideStrategy {
-            case .smart:
-                Text("Menu bar items are rehidden using a smart algorithm")
-            case .timed:
-                Text("Menu bar items are rehidden after a fixed amount of time")
-            case .focusedApp:
-                Text("Menu bar items are rehidden when the focused app changes")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var autoRehideOptions: some View {
-        Toggle("Automatically rehide", isOn: manager.bindings.autoRehide)
-        if manager.autoRehide {
-            if case .timed = manager.rehideStrategy {
-                VStack {
-                    rehideStrategyPicker
-                    IceSlider(
-                        rehideIntervalKey,
-                        value: manager.bindings.rehideInterval,
-                        in: 0...30,
-                        step: 1
-                    )
-                }
-            } else {
-                rehideStrategyPicker
-            }
-        }
-    }
-
-    /// Apply menu bar spacing offset.
     private func applyOffset() {
         isApplyingOffset = true
         manager.itemSpacingOffset = tempItemSpacingOffset
+        let knownPIDs = Set(appState.itemManager.itemCache.allItems.map(\.ownerPID))
         Task {
             do {
-                try await appState.spacingManager.applyOffset()
+                try await appState.spacingManager.applyOffset(additionalPIDs: knownPIDs)
             } catch {
-                let alert = NSAlert(error: error)
-                alert.runModal()
+                NSAlert(error: error).runModal()
             }
             isApplyingOffset = false
         }
     }
 
-    /// Reset menu bar spacing offset to default.
     private func resetOffsetToDefault() {
         tempItemSpacingOffset = 0
         isConfirmingSpacingApply = true

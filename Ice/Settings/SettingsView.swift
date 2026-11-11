@@ -11,18 +11,18 @@ struct SettingsView: View {
 
     private var sidebarWidth: CGFloat {
         switch sidebarRowSize {
-        case .small: 190
-        case .medium: 210
-        case .large: 230
-        @unknown default: 210
+        case .small: 180
+        case .medium: 200
+        case .large: 220
+        @unknown default: 200
         }
     }
 
     private var sidebarItemHeight: CGFloat {
         switch sidebarRowSize {
-        case .small: 26
+        case .small: 28
         case .medium: 32
-        case .large: 34
+        case .large: 36
         @unknown default: 32
         }
     }
@@ -30,9 +30,9 @@ struct SettingsView: View {
     private var sidebarItemFontSize: CGFloat {
         switch sidebarRowSize {
         case .small: 13
-        case .medium: 15
-        case .large: 16
-        @unknown default: 15
+        case .medium: 14
+        case .large: 15
+        @unknown default: 14
         }
     }
 
@@ -54,9 +54,9 @@ struct SettingsView: View {
                 }
             } header: {
                 Text("Ice")
-                    .font(.system(size: 36, weight: .medium))
+                    .font(.system(size: 32, weight: .semibold))
                     .foregroundStyle(.primary)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 6)
             }
             .collapsible(false)
         }
@@ -72,12 +72,6 @@ struct SettingsView: View {
             GeneralSettingsPane()
         case .menuBarLayout:
             MenuBarLayoutSettingsPane()
-        case .menuBarAppearance:
-            MenuBarAppearanceSettingsPane()
-        case .hotkeys:
-            HotkeysSettingsPane()
-        case .advanced:
-            AdvancedSettingsPane()
         case .about:
             AboutSettingsPane()
         }
@@ -87,7 +81,7 @@ struct SettingsView: View {
     private func sidebarItem(for identifier: SettingsNavigationIdentifier) -> some View {
         Label {
             Text(identifier.localized)
-                .font(.system(size: sidebarItemFontSize))
+                .font(.system(size: sidebarItemFontSize, weight: .medium))
                 .padding(.leading, 2)
         } icon: {
             icon(for: identifier).view
@@ -98,10 +92,7 @@ struct SettingsView: View {
     private func icon(for identifier: SettingsNavigationIdentifier) -> IconResource {
         switch identifier {
         case .general: .systemSymbol("gearshape")
-        case .menuBarLayout: .systemSymbol("rectangle.topthird.inset.filled")
-        case .menuBarAppearance: .systemSymbol("swatchpalette")
-        case .hotkeys: .systemSymbol("keyboard")
-        case .advanced: .systemSymbol("gearshape.2")
+        case .menuBarLayout: .systemSymbol("square.grid.2x2")
         case .about: .assetCatalog(.iceCubeStroke)
         }
     }

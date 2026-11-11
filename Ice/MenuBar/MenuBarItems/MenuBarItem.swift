@@ -7,16 +7,15 @@ import Cocoa
 
 // MARK: - MenuBarItem
 
-/// A representation of an item in the menu bar.
+/// A representation of an item in the macOS 27 hosted menu bar.
 struct MenuBarItem {
-    /// The item's window.
+    /// The item's window descriptor.
     let window: WindowInfo
 
     /// The menu bar item info associated with this item.
     let info: MenuBarItemInfo
 
-    /// Accessibility handle used when the system hosts multiple menu bar items
-    /// inside a shared window.
+    /// Accessibility handle for the hosted menu bar item.
     let hostedHandle: HostedMenuBarItemHandle?
 
     /// Stable identity used across cache refreshes.
@@ -39,29 +38,15 @@ struct MenuBarItem {
 
     /// A Boolean value that indicates whether the item is on screen.
     var isOnScreen: Bool {
-        guard let hostedHandle else {
-            return window.isOnScreen
-        }
-        return hostedHandle.isOnScreen
+        hostedHandle?.isOnScreen ?? window.isOnScreen
     }
 
-    /// A Boolean value that indicates whether the item can be moved.
-    var isMovable: Bool {
-        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27, hostedHandle != nil {
-            return canBeHidden
-        }
-        let immovableItems = Set(MenuBarItemInfo.immovableItems)
-        return !immovableItems.contains(info)
-    }
-
-    /// A Boolean value that indicates whether the item can be hidden.
+    /// A Boolean value that indicates whether the item can be hidden by Ice.
     var canBeHidden: Bool {
-        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27, let hostedHandle {
-            guard let bundle = hostedHandle.sourceBundleIdentifier else { return false }
-            return !bundle.hasPrefix("com.apple.") && bundle != Bundle.main.bundleIdentifier
+        guard let bundle = hostedHandle?.sourceBundleIdentifier else {
+            return false
         }
-        let nonHideableItems = Set(MenuBarItemInfo.nonHideableItems)
-        return !nonHideableItems.contains(info)
+        return !bundle.hasPrefix("com.apple.") && bundle != Bundle.main.bundleIdentifier
     }
 
     /// The process identifier of the application that owns the item.
@@ -70,9 +55,6 @@ struct MenuBarItem {
     }
 
     /// The name of the application that owns the item.
-    ///
-    /// This may have a value when ``owningApplication`` does not have
-    /// a localized name.
     var ownerName: String? {
         window.ownerName
     }
@@ -82,74 +64,59 @@ struct MenuBarItem {
         window.owningApplication
     }
 
-    /// A name associated with the item that is suited for display to
-    /// the user.
+    /// The bundle identifier of the owning application, if available.
+    var bundleIdentifier: String? {
+        hostedHandle?.sourceBundleIdentifier ?? owningApplication?.bundleIdentifier
+    }
+
+    /// A name associated with the item that is suited for display to the user.
     var displayName: String {
-        var fallback: String { "Unknown" }
+        let fallback = "未知应用"
         guard let owningApplication else {
             return ownerName ?? title ?? fallback
         }
-        var bestName: String {
-            owningApplication.localizedName ??
-                ownerName ??
-                owningApplication.bundleIdentifier ??
-                fallback
-        }
-        guard let title else {
+        let bestName = owningApplication.localizedName
+            ?? ownerName
+            ?? owningApplication.bundleIdentifier
+            ?? fallback
+        guard let title, !title.isEmpty else {
             return bestName
         }
-        // by default, use the application name, but handle a few special cases
         return switch MenuBarItemInfo.Namespace(owningApplication.bundleIdentifier) {
         case .controlCenter:
             switch title {
-            case "AccessibilityShortcuts": "Accessibility Shortcuts"
-            case "BentoBox": bestName // Control Center
-            case "FocusModes": "Focus"
-            case "KeyboardBrightness": "Keyboard Brightness"
-            case "MusicRecognition": "Music Recognition"
-            case "NowPlaying": "Now Playing"
-            case "ScreenMirroring": "Screen Mirroring"
-            case "StageManager": "Stage Manager"
-            case "UserSwitcher": "Fast User Switching"
+            case "AccessibilityShortcuts": "辅助功能快捷键"
+            case "BentoBox": bestName
+            case "FocusModes": "专注模式"
+            case "KeyboardBrightness": "键盘亮度"
+            case "MusicRecognition": "音乐识别"
+            case "NowPlaying": "正在播放"
+            case "ScreenMirroring": "屏幕镜像"
+            case "StageManager": "台前调度"
+            case "UserSwitcher": "快速用户切换"
             case "WiFi": "Wi-Fi"
             default: title
             }
         case .systemUIServer:
             switch title {
-            case "TimeMachine.TMMenuExtraHost"/*Sonoma*/, "TimeMachineMenuExtra.TMMenuExtraHost"/*Sequoia*/: "Time Machine"
+            case "TimeMachine.TMMenuExtraHost", "TimeMachineMenuExtra.TMMenuExtraHost": "时间机器"
             default: title
             }
-        case MenuBarItemInfo.Namespace("com.apple.Passwords.MenuBarExtra"): "Passwords"
+        case MenuBarItemInfo.Namespace("com.apple.Passwords.MenuBarExtra"):
+            "密码"
         default:
             bestName
         }
     }
 
-    /// A Boolean value that indicates whether the item is currently
-    /// in the menu bar.
+    /// A Boolean value that indicates whether the item is currently rendered in the menu bar.
     var isCurrentlyInMenuBar: Bool {
-        if let hostedHandle {
-            return hostedHandle.currentFrame != nil
-        }
-        let list = Set(Bridging.getWindowList(option: .menuBarItems))
-        return list.contains(windowID)
+        hostedHandle?.currentFrame != nil
     }
 
     /// A string to use for logging purposes.
     var logString: String {
         String(describing: info)
-    }
-
-    /// Creates a menu bar item from the given window.
-    ///
-    /// This initializer does not perform any checks on the window to ensure that
-    /// it is a valid menu bar item window. Only call this initializer if you are
-    /// certain that the window is valid.
-    private init(uncheckedItemWindow itemWindow: WindowInfo) {
-        self.window = itemWindow
-        self.info = MenuBarItemInfo(uncheckedItemWindow: itemWindow)
-        self.hostedHandle = nil
-        self.stableID = "window:\(itemWindow.windowID)"
     }
 
     /// Creates an item backed by an Accessibility element.
@@ -162,102 +129,29 @@ struct MenuBarItem {
         self.hostedHandle = hostedHandle
         self.stableID = "hosted:\(hostedHandle.stableID)"
     }
-
-    /// Creates a menu bar item.
-    ///
-    /// The parameters passed into this initializer are verified during the menu
-    /// bar item's creation. If `itemWindow` does not represent a menu bar item,
-    /// the initializer will fail.
-    ///
-    /// - Parameter itemWindow: A window that contains information about the item.
-    init?(itemWindow: WindowInfo) {
-        guard itemWindow.isMenuBarItem else {
-            return nil
-        }
-        self.init(uncheckedItemWindow: itemWindow)
-    }
-
-    /// Creates a menu bar item with the given window identifier.
-    ///
-    /// The parameters passed into this initializer are verified during the menu
-    /// bar item's creation. If `windowID` does not represent a menu bar item,
-    /// the initializer will fail.
-    ///
-    /// - Parameter windowID: An identifier for a window that contains information
-    ///   about the item.
-    init?(windowID: CGWindowID) {
-        guard let window = WindowInfo(windowID: windowID) else {
-            return nil
-        }
-        self.init(itemWindow: window)
-    }
 }
 
 // MARK: MenuBarItem Getters
 extension MenuBarItem {
-    /// Returns an array of the current menu bar items in the menu bar on the given display.
-    ///
-    /// - Parameters:
-    ///   - display: The display to retrieve the menu bar items on. Pass `nil` to return the
-    ///     menu bar items across all displays.
-    ///   - onScreenOnly: A Boolean value that indicates whether only the menu bar items that
-    ///     are on screen should be returned.
-    ///   - activeSpaceOnly: A Boolean value that indicates whether only the menu bar items
-    ///     that are on the active space should be returned.
+    /// Returns an array of the current menu bar items in the hosted menu bar.
     static func getMenuBarItems(
         on display: CGDirectDisplayID? = nil,
         onScreenOnly: Bool,
-        activeSpaceOnly: Bool,
+        activeSpaceOnly: Bool = true,
         forceRefresh: Bool = false
     ) -> [MenuBarItem] {
-        var option: Bridging.WindowListOption = [.menuBarItems]
-
-        var titlePredicate: (MenuBarItem) -> Bool = { _ in true }
-        var boundsPredicate: (CGWindowID) -> Bool = { _ in true }
-
-        if onScreenOnly {
-            option.insert(.onScreen)
-        }
-        if activeSpaceOnly {
-            option.insert(.activeSpace)
-            titlePredicate = { $0.title != "" }
-        }
-        if let display {
-            let displayBounds = CGDisplayBounds(display)
-            boundsPredicate = { windowID in
-                guard let windowFrame = Bridging.getWindowFrame(for: windowID) else {
-                    return false
+        _ = activeSpaceOnly
+        return HostedMenuBarBackend.enumerate(forceRefresh: forceRefresh).lazy
+            .map(MenuBarItem.init(hostedHandle:))
+            .filter { item in
+                guard let display else {
+                    return true
                 }
-                return displayBounds.intersects(windowFrame)
+                return CGDisplayBounds(display).intersects(item.frame)
             }
-        }
-
-        let legacyWindowIDs = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
-            ? [] : Bridging.getWindowList(option: option)
-        switch HostedMenuBarBackend.preferredMode(for: legacyWindowIDs) {
-        case .hostedAccessibility:
-            return HostedMenuBarBackend.enumerate(forceRefresh: forceRefresh).lazy
-                .map(MenuBarItem.init(hostedHandle:))
-                .filter { item in
-                    guard let display else { return true }
-                    return CGDisplayBounds(display).intersects(item.frame)
-                }
-                .filter { item in
-                    !onScreenOnly || item.isOnScreen
-                }
-                .sortedByOrderInMenuBar()
-        case .unavailable:
-            return []
-        case .legacyWindows:
-            break
-        }
-
-        return legacyWindowIDs.lazy
-            .filter(boundsPredicate)
-            .compactMap { windowID in
-                MenuBarItem(windowID: windowID)
+            .filter { item in
+                !onScreenOnly || item.isOnScreen
             }
-            .filter(titlePredicate)
             .sortedByOrderInMenuBar()
     }
 }
@@ -265,8 +159,11 @@ extension MenuBarItem {
 // MARK: MenuBarItem: Equatable
 extension MenuBarItem: Equatable {
     static func == (lhs: MenuBarItem, rhs: MenuBarItem) -> Bool {
-        lhs.stableID == rhs.stableID && lhs.ownerPID == rhs.ownerPID && lhs.info == rhs.info &&
-            lhs.window.frame == rhs.window.frame && lhs.window.isOnScreen == rhs.window.isOnScreen
+        lhs.stableID == rhs.stableID
+            && lhs.ownerPID == rhs.ownerPID
+            && lhs.info == rhs.info
+            && lhs.window.frame == rhs.window.frame
+            && lhs.window.isOnScreen == rhs.window.isOnScreen
     }
 }
 
@@ -278,26 +175,5 @@ extension MenuBarItem: Hashable {
         hasher.combine(info)
         hasher.combine(NSStringFromRect(window.frame))
         hasher.combine(window.isOnScreen)
-    }
-}
-
-// MARK: MenuBarItemInfo Unchecked Item Window Initializer
-private extension MenuBarItemInfo {
-    /// Creates a simplified item from the given window.
-    ///
-    /// This initializer does not perform any checks on the window to ensure that
-    /// it is a valid menu bar item window. Only call this initializer if you are
-    /// certain that the window is valid.
-    init(uncheckedItemWindow itemWindow: WindowInfo) {
-        if let bundleIdentifier = itemWindow.owningApplication?.bundleIdentifier {
-            self.namespace = Namespace(bundleIdentifier)
-        } else {
-            self.namespace = .null
-        }
-        if let title = itemWindow.title {
-            self.title = title
-        } else {
-            self.title = ""
-        }
     }
 }

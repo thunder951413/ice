@@ -60,12 +60,22 @@ Show All or quitting restores access. Third-party icons from one application
 cannot be hidden independently. Previews use the owning application icon, not a live image of a concealed
 status item.
 
-The visibility assertion also prevents the system Clock from opening Notification
-Center. Ice releases that assertion for a Clock click and restores the saved
-hidden layout when Notification Center closes. Hidden icons may briefly appear
-while the panel is open. macOS 27.2 can open the panel natively despite the
-assertion, so Ice first waits up to 500 ms for it and skips the bridge if it
-appears; pressing Clock again would close it.
+The visibility assertion prevents the system Clock from opening Notification
+Center only on early macOS 27.0–27.1 builds. On macOS 27.2+, both Date (Calendar
+popover) and Time (Notification Center) open natively while the assertion is
+held, so `ClockPanelVisibilitySession.requiresActivationBridge` disables the
+clock activation bridge completely on macOS 27.2+ to avoid a second synthetic
+Clock press retracting the Calendar popover. On macOS 27.0–27.1, Ice releases
+the assertion only when neither Notification Center nor the Calendar popover
+appears natively, and restores the saved hidden layout once the panel closes.
+
+## macOS 27+ Exclusive Overhaul (2026-11-11)
+
+Ice now targets **macOS 27.0+** exclusively (`MACOSX_DEPLOYMENT_TARGET = 27.0`):
+
+- Removed legacy macOS 14–26 physical `NSStatusItem` `10,000pt` divider expansion, synthetic `CGEvent` drag/scromble machinery, `EventTap`, `ScreenCaptureKit` icon/wallpaper capture, menu bar appearance tint/border/shape overlays, `Ifrit`-backed menu bar search panel, global hotkey recorder, and hover/scroll monitors.
+- Unified all hidden-item presentation onto **Ice Bar** with native app icons and zero Screen Recording permission requirement.
+- Consolidated Settings into three Chinese panes: **常规** (`GeneralSettingsPane`), **图标管理** (`MenuBarLayoutSettingsPane` with native SwiftUI section cards), and **关于** (`AboutSettingsPane`), while preserving `HostedSectionAssignments` and existing `UserDefaults` keys.
 
 Hidden descriptors stay in Ice's cache while their owner is running, because
 native hiding can remove them from AX enumeration or leave stale source-app

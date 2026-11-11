@@ -10,9 +10,6 @@ import SwiftUI
 /// Manager for the state of the menu bar.
 @MainActor
 final class MenuBarManager: ObservableObject {
-    /// Information for the menu bar's average color.
-    @Published private(set) var averageColorInfo: MenuBarAverageColorInfo?
-
     /// A Boolean value that indicates whether the menu bar is either always hidden
     /// by the system, or automatically hidden and shown by the system based on the
     /// location of the mouse.
@@ -22,24 +19,14 @@ final class MenuBarManager: ObservableObject {
     /// according to a value stored in UserDefaults.
     @Published private(set) var isMenuBarHiddenBySystemUserDefaults = false
 
+    /// Session-only pause: assignments and spacing remain untouched.
+    @Published private(set) var isHidingPaused = false
+
     /// The shared app state.
     private weak var appState: AppState?
 
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
-
-    /// Timer subscription for sampling the menu bar's average color while Settings is open.
-    private var averageColorTimerCancellable: AnyCancellable?
-
-    /// Reused panel for presenting the menu bar appearance editor popover.
-    private var appearanceEditorPanel: MenuBarAppearanceEditorPanel?
-
-    /// A Boolean value that indicates whether the application menus are hidden.
-    private var isHidingApplicationMenus = false
-
-    /// Session-only pause: assignments, ordering and spacing remain untouched.
-    @Published private(set) var isHidingPaused = false
-    private var statesBeforePause = [MenuBarSection.Name: ControlItem.HidingState]()
 
     /// The managed sections in the menu bar.
     private(set) var sections = [MenuBarSection]()
@@ -47,22 +34,12 @@ final class MenuBarManager: ObservableObject {
     /// The panel that contains the Ice Bar interface.
     let iceBarPanel: IceBarPanel
 
-    /// The panel that contains the menu bar search interface.
-    let searchPanel: MenuBarSearchPanel
-
     /// Native visibility backend for status items hosted by MenuBarAgent.
     let hostedItemVisibilityManager: HostedItemVisibilityManager
-
-    /// A Boolean value that indicates whether the manager can update its stored
-    /// information for the menu bar's average color.
-    private var canUpdateAverageColorInfo: Bool {
-        appState?.settingsWindow?.isVisible == true
-    }
 
     /// Initializes a new menu bar manager instance.
     init(appState: AppState) {
         self.iceBarPanel = IceBarPanel(appState: appState)
-        self.searchPanel = MenuBarSearchPanel(appState: appState)
         self.hostedItemVisibilityManager = HostedItemVisibilityManager(appState: appState)
         self.appState = appState
     }
@@ -85,17 +62,14 @@ final class MenuBarManager: ObservableObject {
 
     /// Performs the initial setup of the menu bar manager's sections.
     private func initializeSections() {
-        // Make sure initialization can only happen once.
         guard sections.isEmpty else {
             Logger.menuBarManager.warning("Sections already initialized")
             return
         }
-
         guard let appState else {
             Logger.menuBarManager.error("Error initializing menu bar sections: Missing app state")
             return
         }
-
         sections = [
             MenuBarSection(name: .visible, appState: appState),
             MenuBarSection(name: .hidden, appState: appState),
@@ -167,108 +141,8 @@ final class MenuBarManager: ObservableObject {
                         else {
                             return
                         }
-                        for section in self.sections {
-                            section.hide()
-                        }
+                        self.iceBarPanel.close()
                     }
-                }
-            }
-            .store(in: &c)
-
-        appState?.navigationState.$isSettingsPresented
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isPresented in
-                guard let self else {
-                    return
-                }
-                averageColorTimerCancellable?.cancel()
-                averageColorTimerCancellable = nil
-                guard isPresented else {
-                    return
-                }
-                updateAverageColorInfo()
-                averageColorTimerCancellable = Timer.publish(every: 5, on: .main, in: .default)
-                    .autoconnect()
-                    .sink { [weak self] _ in
-                        self?.updateAverageColorInfo()
-                    }
-            }
-            .store(in: &c)
-
-        // Hide application menus when a section is shown (if applicable).
-        Publishers.MergeMany(sections.map { $0.controlItem.$state })
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard
-                    let self,
-                    let appState
-                else {
-                    return
-                }
-
-                // Don't continue if:
-                //   * Hosted menu bar visibility is active (dividers are virtual).
-                //   * The "HideApplicationMenus" setting isn't enabled.
-                //   * The menu bar is hidden by the system.
-                //   * The active space is fullscreen.
-                //   * The settings window is visible.
-                guard
-                    !HostedItemVisibilityManager.isSupported,
-                    appState.settingsManager.advancedSettingsManager.hideApplicationMenus,
-                    !isMenuBarHiddenBySystem,
-                    !appState.isActiveSpaceFullscreen,
-                    appState.settingsWindow?.isVisible != true
-                else {
-                    if isHidingApplicationMenus {
-                        showApplicationMenus()
-                    }
-                    return
-                }
-
-                if sections.contains(where: { $0.controlItem.state == .showItems }) {
-                    guard let screen = NSScreen.main else {
-                        return
-                    }
-
-                    let displayID = screen.displayID
-
-                    // Get the application menu frame for the display.
-                    guard let applicationMenuFrame = getApplicationMenuFrame(for: displayID) else {
-                        return
-                    }
-
-                    // Get all items.
-                    var items = MenuBarItem.getMenuBarItems(on: displayID, onScreenOnly: false, activeSpaceOnly: true)
-
-                    // Filter the items down according to the currently enabled/shown sections.
-                    if
-                        let alwaysHiddenSection = section(withName: .alwaysHidden),
-                        alwaysHiddenSection.isEnabled
-                    {
-                        if alwaysHiddenSection.controlItem.state == .hideItems {
-                            if let alwaysHiddenControlItem = items.firstIndex(matching: .alwaysHiddenControlItem).map({ items.remove(at: $0) }) {
-                                items.trimPrefix { $0.frame.maxX <= alwaysHiddenControlItem.frame.minX }
-                            }
-                        }
-                    } else {
-                        if let hiddenControlItem = items.firstIndex(matching: .hiddenControlItem).map({ items.remove(at: $0) }) {
-                            items.trimPrefix { $0.frame.maxX <= hiddenControlItem.frame.minX }
-                        }
-                    }
-
-                    // Get the leftmost item on the screen.
-                    guard let leftmostItem = items.min(by: { $0.frame.minX < $1.frame.minX }) else {
-                        return
-                    }
-
-                    // If the minX of the item is less than or equal to the maxX of the
-                    // application menu frame, activate the app to hide the menu.
-                    if leftmostItem.frame.minX <= applicationMenuFrame.maxX {
-                        hideApplicationMenus()
-                    }
-                } else if isHidingApplicationMenus {
-                    showApplicationMenus()
                 }
             }
             .store(in: &c)
@@ -276,93 +150,18 @@ final class MenuBarManager: ObservableObject {
         cancellables = c
     }
 
-    /// Updates the ``averageColorInfo`` property with the current average color
-    /// of the menu bar.
-    func updateAverageColorInfo() {
-        guard
-            canUpdateAverageColorInfo,
-            let screen = appState?.settingsWindow?.screen
-        else {
-            return
-        }
-
-        let image: CGImage?
-        let source: MenuBarAverageColorInfo.Source
-
-        let windows = WindowInfo.getOnScreenWindows(excludeDesktopWindows: false)
-        let displayID = screen.displayID
-
-        if let window = WindowInfo.getMenuBarWindow(from: windows, for: displayID) {
-            var bounds = window.frame
-            bounds.size.height = 1
-            bounds.origin.x = bounds.maxX - (bounds.width / 4)
-            bounds.size.width /= 4
-
-            image = ScreenCapture.captureWindow(window.windowID, screenBounds: bounds, option: .nominalResolution)
-            source = .menuBarWindow
-        } else if let window = WindowInfo.getWallpaperWindow(from: windows, for: displayID) {
-            var bounds = window.frame
-            bounds.size.height = 1
-            bounds.origin.x = bounds.midX
-            bounds.size.width /= 2
-
-            image = ScreenCapture.captureWindow(window.windowID, screenBounds: bounds, option: .nominalResolution)
-            source = .desktopWallpaper
-        } else {
-            return
-        }
-
-        guard
-            let image,
-            let color = image.averageColor(makeOpaque: true)
-        else {
-            return
-        }
-
-        let info = MenuBarAverageColorInfo(color: color, source: source)
-
-        if averageColorInfo != info {
-            averageColorInfo = info
-        }
-    }
-
-    /// Returns a Boolean value that indicates whether the given display
-    /// has a valid menu bar.
-    func hasValidMenuBar(in windows: [WindowInfo], for display: CGDirectDisplayID) -> Bool {
-        guard let menuBarWindow = WindowInfo.getMenuBarWindow(from: windows, for: display) else {
-            return false
-        }
-        if HostedItemVisibilityManager.isSupported {
-            return true
-        }
-        let position = menuBarWindow.frame.origin
-        do {
-            systemWideElement.messagingTimeout = 0.05
-            let uiElement = try systemWideElement.elementAtPosition(Float(position.x), Float(position.y))
-            return try uiElement?.role() == .menuBar
-        } catch {
-            return false
-        }
-    }
-
     private struct ApplicationMenuFrameKey: Hashable {
         let ownerPID: pid_t
         let displayID: CGDirectDisplayID
     }
 
-    /// Short-lived cache of application menu frames. Reading the frame is a
-    /// synchronous cross-process AX walk (up to ~200ms) and hover, click and
-    /// overlay paths may ask for it on every mouse event. Keyed by the menu
-    /// bar owner, so switching apps naturally misses.
+    /// Short-lived cache of application menu frames.
     private var applicationMenuFrameCache = [ApplicationMenuFrameKey: (date: ContinuousClock.Instant, frame: CGRect?)]()
 
     /// Default freshness for ``getApplicationMenuFrame(for:maxAge:)``.
     nonisolated static let applicationMenuFrameCacheLifetime: Duration = .milliseconds(500)
 
     /// Returns the frame of the application menu for the given display.
-    ///
-    /// - Parameter maxAge: How old a cached answer may be. Pass `.zero` when the
-    ///   caller is specifically waiting for the menu to change.
     func getApplicationMenuFrame(
         for displayID: CGDirectDisplayID,
         maxAge: Duration = MenuBarManager.applicationMenuFrameCacheLifetime
@@ -386,9 +185,6 @@ final class MenuBarManager: ObservableObject {
     private func readApplicationMenuFrame(for displayID: CGDirectDisplayID) -> CGRect? {
         let displayBounds = CGDisplayBounds(displayID)
 
-        // On hosted menu bars, hit-testing the exact display corner can return
-        // MenuBarAgent's window instead of AXMenuBar. Ask the app that owns the
-        // visible application menu, including disabled menu titles.
         if let owner = NSWorkspace.shared.menuBarOwningApplication,
            let application = Application(forProcessID: owner.processIdentifier) {
             application.messagingTimeout = 0.05
@@ -410,78 +206,65 @@ final class MenuBarManager: ObservableObject {
 
     private func applicationMenuFrame(from menuBar: UIElement, displayBounds: CGRect) -> CGRect? {
         menuBar.messagingTimeout = 0.05
-        guard let items: [UIElement] = try? menuBar.arrayAttribute(.children), !items.isEmpty else { return nil }
+        guard let items: [UIElement] = try? menuBar.arrayAttribute(.children), !items.isEmpty else {
+            return nil
+        }
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(200))
         var frames = [CGRect]()
         for item in items {
-            guard ContinuousClock.now < deadline else { return nil }
+            guard ContinuousClock.now < deadline else {
+                return nil
+            }
             item.messagingTimeout = 0.05
-            // A partial result could omit File/Edit or the last menu title.
-            // Fail closed instead of shortening the protected menu region.
-            guard let frame: CGRect = try? item.attribute(.frame) else { return nil }
+            guard let frame: CGRect = try? item.attribute(.frame) else {
+                return nil
+            }
             frames.append(frame)
         }
         return ApplicationMenuGeometry.frame(itemFrames: frames, displayBounds: displayBounds)
     }
 
-    /// Reveals every menu bar item that Ice is currently hiding.
-    ///
-    /// Ice hides items by moving its control-item dividers so the real items
-    /// end up in a hidden or always-hidden region of the menu bar. When items
-    /// get stranded there (and stay hidden across relaunches), forcing every
-    /// control item into the ``ControlItem/State/showItems`` state pushes all of
-    /// them back into view without requiring a synthetic drag.
-    func showAllSections() {
-        Logger.menuBarManager.info("Showing all sections to reveal hidden items")
-        iceBarPanel.close()
-        for section in sections {
-            section.controlItem.state = .showItems
-        }
-    }
-
     func pauseHiding() {
-        guard !isHidingPaused else { return }
-        statesBeforePause = Dictionary(uniqueKeysWithValues: sections.map { ($0.name, $0.controlItem.state) })
+        guard !isHidingPaused else {
+            return
+        }
         isHidingPaused = true
+        iceBarPanel.close()
         hostedItemVisibilityManager.restoreAll()
-        showAllSections()
     }
 
     func resumeHiding() {
-        guard isHidingPaused else { return }
-        isHidingPaused = false
-        for section in sections {
-            section.controlItem.state = statesBeforePause[section.name] ?? .hideItems
+        guard isHidingPaused else {
+            return
         }
-        statesBeforePause.removeAll()
+        isHidingPaused = false
         hostedItemVisibilityManager.refreshNow()
     }
 
     func toggleHidingPaused() {
-        if isHidingPaused { resumeHiding() } else { pauseHiding() }
+        if isHidingPaused {
+            resumeHiding()
+        } else {
+            pauseHiding()
+        }
     }
 
-    /// Resets Ice's runtime menu bar modifications so that every managed item
-    /// becomes visible again.
-    ///
-    /// This reveals all sections and restores the menu bar item spacing to the
-    /// system default (a negative spacing offset can make items overlap and
-    /// appear invisible). It does not touch the user's other preferences.
+    /// Resets Ice's runtime menu bar modifications so that every managed item becomes visible again.
     func resetModifications() {
         Logger.menuBarManager.info("Resetting Ice menu bar modifications")
         isHidingPaused = false
-        statesBeforePause.removeAll()
-        showAllSections()
+        iceBarPanel.close()
         guard let appState else {
             return
         }
+        let knownPIDs = Set(appState.itemManager.itemCache.allItems.map(\.ownerPID))
         appState.itemManager.resetHostedSectionAssignments()
         hostedItemVisibilityManager.restoreAll()
         if appState.settingsManager.generalSettingsManager.itemSpacingOffset != 0 {
             appState.settingsManager.generalSettingsManager.itemSpacingOffset = 0
             Task {
                 do {
-                    try await appState.spacingManager.applyOffset()
+                    try await appState.spacingManager.applyOffset(additionalPIDs: knownPIDs)
                 } catch {
                     Logger.menuBarManager.error("Error resetting item spacing: \(error)")
                     NSAlert(error: error).runModal()
@@ -490,88 +273,77 @@ final class MenuBarManager: ObservableObject {
         }
     }
 
-    /// Shows the right-click menu.
+    /// Shows the right-click menu when clicking empty space in the menu bar.
     func showRightClickMenu(at point: CGPoint) {
         let menu = NSMenu(title: "Ice")
 
-        let editItem = NSMenuItem(
-            title: "Edit Menu Bar Appearance…",
-            action: #selector(showAppearanceEditorPopover),
-            keyEquivalent: ""
-        )
-        editItem.target = self
-        menu.addItem(editItem)
+        if let hiddenSection = section(withName: .hidden) {
+            let toggleHiddenItem = NSMenuItem(
+                title: hiddenSection.isHidden ? "展开隐藏图标" : "收起隐藏图标",
+                action: #selector(toggleHiddenSectionAction),
+                keyEquivalent: ""
+            )
+            toggleHiddenItem.target = self
+            menu.addItem(toggleHiddenItem)
+        }
 
-        let showAllItem = NSMenuItem(
-            title: isHidingPaused ? "Resume Hiding" : "Pause Hiding",
-            action: #selector(showAllSectionsAction),
+        if let alwaysHiddenSection = section(withName: .alwaysHidden), alwaysHiddenSection.isEnabled {
+            let toggleAlwaysItem = NSMenuItem(
+                title: alwaysHiddenSection.isHidden ? "展开始终隐藏图标" : "收起始终隐藏图标",
+                action: #selector(toggleAlwaysHiddenSectionAction),
+                keyEquivalent: ""
+            )
+            toggleAlwaysItem.target = self
+            menu.addItem(toggleAlwaysItem)
+        }
+
+        let pauseItem = NSMenuItem(
+            title: isHidingPaused ? "恢复隐藏菜单栏图标" : "暂停隐藏菜单栏图标",
+            action: #selector(togglePauseAction),
             keyEquivalent: ""
         )
-        showAllItem.target = self
-        menu.addItem(showAllItem)
+        pauseItem.target = self
+        menu.addItem(pauseItem)
 
         menu.addItem(.separator())
 
+        let layoutItem = NSMenuItem(
+            title: "图标管理…",
+            action: #selector(openLayoutSettingsAction),
+            keyEquivalent: ""
+        )
+        layoutItem.target = self
+        menu.addItem(layoutItem)
+
         let settingsItem = NSMenuItem(
-            title: "Ice Settings…",
+            title: "Ice 设置…",
             action: #selector(AppDelegate.openSettingsWindow),
             keyEquivalent: ","
         )
+        settingsItem.keyEquivalentModifierMask = .command
         menu.addItem(settingsItem)
 
         menu.popUp(positioning: nil, at: point, in: nil)
     }
 
-    /// Hides the application menus.
-    func hideApplicationMenus() {
-        guard let appState else {
-            Logger.menuBarManager.error("Error hiding application menus: Missing app state")
-            return
-        }
-        Logger.menuBarManager.info("Hiding application menus")
-        appState.activate(withPolicy: .regular)
-        isHidingApplicationMenus = true
+    @objc private func toggleHiddenSectionAction() {
+        section(withName: .hidden)?.toggle()
     }
 
-    /// Shows the application menus.
-    func showApplicationMenus() {
-        guard let appState else {
-            Logger.menuBarManager.error("Error showing application menus: Missing app state")
-            return
-        }
-        Logger.menuBarManager.info("Showing application menus")
-        appState.deactivate(withPolicy: .accessory)
-        isHidingApplicationMenus = false
+    @objc private func toggleAlwaysHiddenSectionAction() {
+        section(withName: .alwaysHidden)?.toggle()
     }
 
-    /// Toggles the visibility of the application menus.
-    func toggleApplicationMenus() {
-        if isHidingApplicationMenus {
-            showApplicationMenus()
-        } else {
-            hideApplicationMenus()
-        }
-    }
-
-    /// Reveals all hidden items. Wraps ``showAllSections()`` for use as a menu
-    /// item action.
-    @objc private func showAllSectionsAction() {
+    @objc private func togglePauseAction() {
         toggleHidingPaused()
     }
 
-    /// Shows the appearance editor popover, centered under the menu bar.
-    @objc private func showAppearanceEditorPopover() {
+    @objc private func openLayoutSettingsAction() {
         guard let appState else {
-            Logger.menuBarManager.error("Error showing appearance editor popover: Missing app state")
             return
         }
-        let panel = appearanceEditorPanel ?? {
-            let created = MenuBarAppearanceEditorPanel(appState: appState)
-            appearanceEditorPanel = created
-            return created
-        }()
-        panel.orderFrontRegardless()
-        panel.showAppearanceEditorPopover()
+        appState.navigationState.settingsNavigationIdentifier = .menuBarLayout
+        appState.appDelegate?.openSettingsWindow()
     }
 
     /// Returns the menu bar section with the given name.
@@ -583,21 +355,7 @@ final class MenuBarManager: ObservableObject {
 // MARK: MenuBarManager: BindingExposable
 extension MenuBarManager: BindingExposable { }
 
-// MARK: - MenuBarAverageColorInfo
-
-/// Information for the menu bar's average color.
-struct MenuBarAverageColorInfo: Hashable {
-    enum Source: Hashable {
-        case menuBarWindow
-        case desktopWallpaper
-    }
-
-    var color: CGColor
-    var source: Source
-}
-
 // MARK: - Logger
 private extension Logger {
-    /// Logger to use for the menu bar manager.
     static let menuBarManager = Logger(category: "MenuBarManager")
 }

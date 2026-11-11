@@ -9,34 +9,20 @@ struct PermissionsView: View {
     @EnvironmentObject var permissionsManager: PermissionsManager
     @Environment(\.openWindow) private var openWindow
 
-    private var continueButtonText: LocalizedStringKey {
-        if case .hasRequiredPermissions = permissionsManager.permissionsState {
-            "Continue in Limited Mode"
-        } else {
-            "Continue"
-        }
-    }
-
-    private var continueButtonForegroundStyle: some ShapeStyle {
-        if case .hasRequiredPermissions = permissionsManager.permissionsState {
-            AnyShapeStyle(.yellow)
-        } else {
-            AnyShapeStyle(.primary)
-        }
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 16) {
             headerView
-                .padding(.vertical)
+                .padding(.top, 8)
 
             explanationView
             permissionsGroupStack
 
             footerView
-                .padding(.vertical)
+                .padding(.bottom, 8)
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .frame(width: 460)
         .fixedSize()
         .readWindow { window in
             guard let window else {
@@ -57,15 +43,19 @@ struct PermissionsView: View {
 
     @ViewBuilder
     private var headerView: some View {
-        Label {
-            Text("Permissions")
-                .font(.system(size: 36))
-        } icon: {
+        HStack(spacing: 14) {
             if let nsImage = NSImage(named: NSImage.applicationIconName) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 75, height: 75)
+                    .frame(width: 64, height: 64)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("欢迎使用 Ice")
+                    .font(.system(size: 26, weight: .semibold))
+                Text("开始前请完成必要的系统权限授权")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -73,21 +63,20 @@ struct PermissionsView: View {
     @ViewBuilder
     private var explanationView: some View {
         IceSection {
-            VStack {
-                Text("Ice needs permission to manage the menu bar.")
-                Text("Absolutely no personal information is collected or stored.")
-                    .bold()
-                    .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ice 需要辅助功能权限以管理 macOS 27 菜单栏图标。")
+                    .font(.callout)
+                Label("应用仅在本地运行，绝不会收集、存储或上传任何个人数据。", systemImage: "lock.shield.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            .padding()
+            .padding(4)
         }
-        .font(.title3)
-        .padding(.bottom, 10)
     }
 
     @ViewBuilder
     private var permissionsGroupStack: some View {
-        VStack(spacing: 7.5) {
+        VStack(spacing: 10) {
             ForEach(permissionsManager.allPermissions) { permission in
                 permissionBox(permission)
             }
@@ -96,7 +85,7 @@ struct PermissionsView: View {
 
     @ViewBuilder
     private var footerView: some View {
-        HStack {
+        HStack(spacing: 12) {
             quitButton
             continueButton
         }
@@ -108,7 +97,7 @@ struct PermissionsView: View {
         Button {
             NSApp.terminate(nil)
         } label: {
-            Text("Quit")
+            Text("退出")
                 .frame(maxWidth: .infinity)
         }
     }
@@ -123,80 +112,70 @@ struct PermissionsView: View {
             appState.permissionsWindow?.close()
             appState.appDelegate?.openSettingsWindow()
         } label: {
-            Text(continueButtonText)
+            Text("进入设置")
                 .frame(maxWidth: .infinity)
-                .foregroundStyle(continueButtonForegroundStyle)
         }
+        .buttonStyle(.borderedProminent)
         .disabled(permissionsManager.permissionsState == .missingPermissions)
     }
 
     @ViewBuilder
     private func permissionBox(_ permission: Permission) -> some View {
         IceSection {
-            VStack(spacing: 10) {
-                Text(permission.title)
-                    .font(.title)
-                    .underline()
-
-                VStack(spacing: 0) {
-                    Text("Ice needs this to:")
-                        .font(.title3)
-                        .bold()
-
-                    VStack(alignment: .leading) {
-                        ForEach(permission.details, id: \.self) { detail in
-                            HStack {
-                                Text("•").bold()
-                                Text(detail)
-                            }
-                        }
-                    }
-                }
-
-                Button {
-                    guard let appState = permissionsManager.appState else {
-                        return
-                    }
-                    permission.performRequest()
-                    Task {
-                        await permission.waitForPermission()
-                        guard
-                            permission.hasPermission,
-                            !appState.hasPerformedSetup
-                        else {
-                            return
-                        }
-                        appState.activate(withPolicy: .regular)
-                        openWindow(id: Constants.permissionsWindowID)
-                    }
-                } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(permission.title)
+                        .font(.headline)
+                    Spacer()
                     if permission.hasPermission {
-                        Text("Permission Granted")
+                        Label("已授权", systemImage: "checkmark.circle.fill")
+                            .font(.subheadline.weight(.medium))
                             .foregroundStyle(.green)
                     } else {
-                        Text("Grant Permission")
+                        Label("未授权", systemImage: "exclamationmark.circle.fill")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.orange)
                     }
                 }
-                .allowsHitTesting(!permission.hasPermission)
 
-                if !permission.isRequired {
-                    IceGroupBox {
-                        AnnotationView(
-                            alignment: .center,
-                            font: .callout.bold()
-                        ) {
-                            Label {
-                                Text("Ice can work in a limited mode without this permission.")
-                            } icon: {
-                                Image(systemName: "checkmark.shield")
-                                    .foregroundStyle(.green)
-                            }
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(permission.details, id: \.self) { detail in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("•")
+                                .foregroundStyle(.secondary)
+                            Text(detail)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
+
+                HStack {
+                    Spacer()
+                    Button {
+                        guard let appState = permissionsManager.appState else {
+                            return
+                        }
+                        permission.performRequest()
+                        Task {
+                            await permission.waitForPermission()
+                            guard
+                                permission.hasPermission,
+                                !appState.hasPerformedSetup
+                            else {
+                                return
+                            }
+                            appState.activate(withPolicy: .regular)
+                            openWindow(id: Constants.permissionsWindowID)
+                        }
+                    } label: {
+                        Text(permission.hasPermission ? "已完成授权" : "前往系统设置授权…")
+                    }
+                    .disabled(permission.hasPermission)
+                }
             }
-            .padding(10)
-            .frame(maxWidth: .infinity)
+            .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

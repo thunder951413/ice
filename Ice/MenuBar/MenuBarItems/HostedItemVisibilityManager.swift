@@ -19,10 +19,7 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     /// System-owned item categories (Clock, Control Center, etc.) passed to the
-    /// MenuBarClientCore assertion as always allowed. The values mirror the
-    /// private enumeration used by Thaw's macOS 27 patch; if a future release
-    /// adds categories, items in them would be concealed, so keep this list in
-    /// one place and revisit it on each major macOS update.
+    /// MenuBarClientCore assertion as always allowed.
     private static let allowedSystemItemKinds: [NSNumber] = (0...8).map { NSNumber(value: $0) }
 
     private weak var appState: AppState?
@@ -62,19 +59,17 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     func performSetup() {
-        guard Self.isSupported, let appState else { return }
-        if !IceMenuBarVisibilityAvailable() {
-            failureDescription = "This macOS version does not provide the menu bar hiding interface. Items remain visible."
+        guard Self.isSupported, let appState else {
+            return
         }
-        let changes = Publishers.MergeMany(
-            [
-                appState.itemManager.$itemCache.mapToVoid().eraseToAnyPublisher(),
-                appState.settingsManager.generalSettingsManager.$useIceBar.mapToVoid().eraseToAnyPublisher(),
-                appState.settingsManager.advancedSettingsManager.$enableAlwaysHiddenSection.mapToVoid().eraseToAnyPublisher(),
-                appState.menuBarManager.$isHidingPaused.mapToVoid().eraseToAnyPublisher(),
-            ]
-                + appState.menuBarManager.sections.map { $0.controlItem.$state.mapToVoid().eraseToAnyPublisher() }
-        )
+        if !IceMenuBarVisibilityAvailable() {
+            failureDescription = "当前 macOS 版本未提供原生菜单栏隐藏接口，所有图标保持常驻显示。"
+        }
+        let changes = Publishers.MergeMany([
+            appState.itemManager.$itemCache.mapToVoid().eraseToAnyPublisher(),
+            appState.settingsManager.generalSettingsManager.$enableAlwaysHiddenSection.mapToVoid().eraseToAnyPublisher(),
+            appState.menuBarManager.$isHidingPaused.mapToVoid().eraseToAnyPublisher(),
+        ])
         changes.sink { [weak self] in self?.scheduleRefresh() }.store(in: &cancellables)
 
         for name in [
@@ -92,62 +87,77 @@ final class HostedItemVisibilityManager: ObservableObject {
                         self?.lastFailed = nil
                     }
                     self?.scheduleRefresh()
-                }.store(in: &cancellables)
+                }
+                .store(in: &cancellables)
         }
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in
                 HostedMenuBarBackend.invalidateEnumerationCache()
                 self?.scheduleRefresh()
-            }.store(in: &cancellables)
+            }
+            .store(in: &cancellables)
         DistributedNotificationCenter.default()
             .publisher(for: Notification.Name("com.apple.donotdisturb.stateChanged"))
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                guard let self, Date.now >= ignoreStateChangesUntil else { return }
-                // A Focus transition can invalidate the assertion. Ignore our
-                // own notifications to avoid a reactivation/reflow loop.
+                guard let self, Date.now >= ignoreStateChangesUntil else {
+                    return
+                }
                 needsReactivation = true
                 lastFailed = nil
                 scheduleRefresh()
-            }.store(in: &cancellables)
-        // Recheck revocation without keeping the onboarding one-second poll alive.
+            }
+            .store(in: &cancellables)
         Timer.publish(every: 10, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in
-                guard let self, !self.isStopped else { return }
+                guard let self, !self.isStopped else {
+                    return
+                }
                 self.appState?.permissionsManager.refreshPermissions()
                 let hadPermission = self.permissionWasAvailable
-                if self.checkAccessibility(), !hadPermission { self.scheduleRefresh() }
-            }.store(in: &cancellables)
+                if self.checkAccessibility(), !hadPermission {
+                    self.scheduleRefresh()
+                }
+            }
+            .store(in: &cancellables)
         scheduleRefresh()
     }
 
     private func scheduleRefresh() {
-        guard !isStopped else { return }
+        guard !isStopped else {
+            return
+        }
         refreshTask?.cancel()
         refreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled, let self else {
+                return
+            }
             refreshTask = nil
             refreshNow()
         }
     }
 
     func refreshNow() {
-        guard Self.isSupported, !isStopped, let appState else { return }
-        // A held assertion suppresses Notification Center even though Clock
-        // itself remains visible. Keep it released until that panel closes.
-        guard !isClockActivationInProgress else { return }
-        guard checkAccessibility() else { return }
+        guard Self.isSupported, !isStopped, let appState else {
+            return
+        }
+        guard !isClockActivationInProgress else {
+            return
+        }
+        guard checkAccessibility() else {
+            return
+        }
         guard !appState.menuBarManager.isHidingPaused else {
-            if assertion.isActive || assertion.isActivating { releaseRestriction() }
+            if assertion.isActive || assertion.isActivating {
+                releaseRestriction()
+            }
             resolveRevealWaiters()
             return
         }
-        let useIceBar = appState.settingsManager.generalSettingsManager.useIceBar
         let entries = MenuBarSection.Name.allCases.flatMap { name in
             let section = appState.menuBarManager.section(withName: name)
             let hide = name != .visible && section?.isEnabled == true
-                && (useIceBar || section?.controlItem.state == .hideItems)
             return appState.itemManager.itemCache[name].map { item in
                 let bundle = item.hostedHandle?.sourceBundleIdentifier
                 return HostedVisibilityPolicy.Item(
@@ -174,23 +184,29 @@ final class HostedItemVisibilityManager: ObservableObject {
             return
         }
         guard IceMenuBarVisibilityAvailable() else {
-            failureDescription = "Menu bar hiding is unavailable on this macOS version. Items remain visible."
+            failureDescription = "当前 macOS 版本无法启用菜单栏图标隐藏，所有图标保持显示。"
             return
         }
-        guard !assertion.isActivating else { return }
+        guard !assertion.isActivating else {
+            return
+        }
         if !needsReactivation, let applied = assertion.activeConfiguration, assertion.isActive,
            applied.concealed == desired.concealed,
            desired.allowed.isSubset(of: applied.allowed) {
             resolveRevealWaiters()
             return
         }
-        guard lastFailed != desired else { return }
+        guard lastFailed != desired else {
+            return
+        }
         needsReactivation = false
         generation += 1
         let attempt = generation
         ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
         assertion.begin(desired) { [weak self] result in
-            guard let self, self.generation == attempt, !self.isStopped else { return }
+            guard let self, self.generation == attempt, !self.isStopped else {
+                return
+            }
             self.ignoreStateChangesUntil = .now.addingTimeInterval(1.5)
             switch result {
             case .failure(let error):
@@ -217,9 +233,12 @@ final class HostedItemVisibilityManager: ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .permissionRequired: "Accessibility permission is required. Enable it in System Settings, then try again."
-            case .timedOut: "The menu bar item did not become available in time. Try again."
-            case .unavailable: "This menu bar item is no longer available."
+            case .permissionRequired:
+                "需要辅助功能权限才能操控菜单栏图标，请在系统设置中授权后重试。"
+            case .timedOut:
+                "等待菜单栏图标唤醒超时，请重试。"
+            case .unavailable:
+                "该菜单栏图标当前不可用或对应应用已退出。"
             }
         }
     }
@@ -236,7 +255,9 @@ final class HostedItemVisibilityManager: ObservableObject {
         var baselineWindowIDs = Set(
             WindowInfo.getOnScreenWindows().filter { $0.ownerPID == item.ownerPID }.map(\.windowID)
         )
-        if let previous = revealTokens[bundle] { finishRevealWaiter(previous, error: CancellationError()) }
+        if let previous = revealTokens[bundle] {
+            finishRevealWaiter(previous, error: CancellationError())
+        }
         let token = UUID()
         revealTokens[bundle] = token
         temporarilyRevealedBundles.insert(bundle)
@@ -265,9 +286,6 @@ final class HostedItemVisibilityManager: ObservableObject {
             }
             try Task.checkCancellation()
             guard revealTokens[bundle] == token, !isStopped else { throw CancellationError() }
-            // Include any status-bar backing windows that materialized when the
-            // item itself became visible so only panels/menus opened by `action`
-            // keep the item revealed.
             baselineWindowIDs.formUnion(
                 WindowInfo.getOnScreenWindows().filter { $0.ownerPID == item.ownerPID }.map(\.windowID)
             )
@@ -285,20 +303,32 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     private func resolveRevealWaiters() {
-        guard !assertion.isActivating else { return }
+        guard !assertion.isActivating else {
+            return
+        }
         let concealed = assertion.activeConfiguration?.concealed ?? []
         let ready = revealWaiters.filter { !concealed.contains($0.value.bundle) }.map(\.key)
-        for token in ready { finishRevealWaiter(token, error: nil) }
+        for token in ready {
+            finishRevealWaiter(token, error: nil)
+        }
     }
 
     private func finishRevealWaiter(_ token: UUID, error: Error?) {
-        guard let waiter = revealWaiters.removeValue(forKey: token) else { return }
+        guard let waiter = revealWaiters.removeValue(forKey: token) else {
+            return
+        }
         waiter.timeout.cancel()
-        if let error { waiter.continuation.resume(throwing: error) } else { waiter.continuation.resume() }
+        if let error {
+            waiter.continuation.resume(throwing: error)
+        } else {
+            waiter.continuation.resume()
+        }
     }
 
     private func failRevealWaiters(_ error: Error) {
-        for token in Array(revealWaiters.keys) { finishRevealWaiter(token, error: error) }
+        for token in Array(revealWaiters.keys) {
+            finishRevealWaiter(token, error: error)
+        }
     }
 
     private func scheduleRehide(
@@ -308,15 +338,17 @@ final class HostedItemVisibilityManager: ObservableObject {
         baselineWindowIDs: Set<CGWindowID>,
         didPerformAction: Bool
     ) {
-        guard revealTokens[bundle] == token, !isStopped else { return }
-        let configuredDelay = appState?.settingsManager.advancedSettingsManager.tempShowInterval ?? 15
+        guard revealTokens[bundle] == token, !isStopped else {
+            return
+        }
+        let configuredDelay = appState?.settingsManager.generalSettingsManager.tempShowInterval ?? 15
         let boundedDelay = configuredDelay.isFinite ? min(30, max(0, configuredDelay)) : 15
-        // Even zero-delay menus need one run-loop opportunity to create their
-        // windows after AXPress; the user's delay begins after the action.
         let delay = didPerformAction ? max(0.5, boundedDelay) : 0
         revealTasks[bundle] = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-            guard let self else { return }
+            guard let self else {
+                return
+            }
             let waitStarted = ContinuousClock.now
             while didPerformAction && TemporaryRevealRehidePolicy.shouldWait(
                 windows: WindowInfo.getOnScreenWindows().map {
@@ -329,7 +361,9 @@ final class HostedItemVisibilityManager: ObservableObject {
             ) {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
             }
-            guard self.revealTokens[bundle] == token, !Task.isCancelled else { return }
+            guard self.revealTokens[bundle] == token, !Task.isCancelled else {
+                return
+            }
             self.revealTokens[bundle] = nil
             self.temporarilyRevealedBundles.remove(bundle)
             self.revealTasks[bundle] = nil
@@ -378,18 +412,28 @@ final class HostedItemVisibilityManager: ObservableObject {
     }
 
     var needsClockActivationBridge: Bool {
-        Self.isSupported && !isStopped && !isClockActivationInProgress && assertion.isActive
+        Self.isSupported
+            && ClockPanelVisibilitySession.requiresActivationBridge(
+                operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersion
+            )
+            && !isStopped
+            && !isClockActivationInProgress
+            && assertion.isActive
     }
 
     func beginClockActivationBridge() -> Bool {
-        guard needsClockActivationBridge else { return false }
+        guard needsClockActivationBridge else {
+            return false
+        }
         isClockActivationInProgress = true
         releaseRestriction()
         return true
     }
 
     func endClockActivationBridge() {
-        guard isClockActivationInProgress else { return }
+        guard isClockActivationInProgress else {
+            return
+        }
         isClockActivationInProgress = false
         refreshNow()
     }
@@ -403,18 +447,24 @@ final class HostedItemVisibilityManager: ObservableObject {
             retryConfiguration = configuration
         }
         let delays: [Duration] = [
-            .milliseconds(500), .seconds(1), .seconds(2), .seconds(4), .seconds(8),
+            .milliseconds(500),
+            .seconds(1),
+            .seconds(2),
+            .seconds(4),
+            .seconds(8),
         ]
         activationFailureCount = min(activationFailureCount + 1, delays.count)
         lastFailed = configuration
-        failureDescription = "macOS could not hide menu bar items: \(description)"
+        failureDescription = "macOS 无法隐藏部分菜单栏图标：\(description)"
 
         let delay = delays[activationFailureCount - 1]
         retryTask?.cancel()
         retryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, !self.isStopped,
-                  self.retryConfiguration == configuration else { return }
+                  self.retryConfiguration == configuration else {
+                return
+            }
             self.retryTask = nil
             self.lastFailed = nil
             self.refreshNow()
@@ -430,9 +480,6 @@ final class HostedItemVisibilityManager: ObservableObject {
 
     private func releaseRestriction() {
         let hadRestriction = assertion.isActive || assertion.isActivating
-        // An activation may have concealed items natively before its completion
-        // was superseded, leaving the backend's concealed set unchanged. The
-        // set-based invalidation would then be skipped, so invalidate here.
         if hadRestriction {
             HostedMenuBarBackend.invalidateEnumerationCache()
             generation += 1

@@ -4,6 +4,31 @@ import Foundation
 @main
 enum ClockPanelVisibilitySessionTests {
     static func main() {
+        expect(
+            ClockPanelVisibilitySession.requiresActivationBridge(
+                operatingSystemVersion: OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0)
+            ),
+            "macOS 27.0 needs the clock activation bridge"
+        )
+        expect(
+            ClockPanelVisibilitySession.requiresActivationBridge(
+                operatingSystemVersion: OperatingSystemVersion(majorVersion: 27, minorVersion: 1, patchVersion: 3)
+            ),
+            "macOS 27.1 needs the clock activation bridge"
+        )
+        expect(
+            !ClockPanelVisibilitySession.requiresActivationBridge(
+                operatingSystemVersion: OperatingSystemVersion(majorVersion: 27, minorVersion: 2, patchVersion: 0)
+            ),
+            "macOS 27.2 opens Date/Calendar and Notification Center natively without re-pressing Clock"
+        )
+        expect(
+            !ClockPanelVisibilitySession.requiresActivationBridge(
+                operatingSystemVersion: OperatingSystemVersion(majorVersion: 28, minorVersion: 0, patchVersion: 0)
+            ),
+            "macOS 28+ must not run the 27.0–27.1 clock activation bridge"
+        )
+
         var longSession = ClockPanelVisibilitySession()
         expect(longSession.observe(isOpen: true, elapsed: .seconds(1)) == .wait(.milliseconds(100)), "an open panel must keep hiding suspended")
         expect(longSession.observe(isOpen: true, elapsed: .seconds(31)) == .wait(.seconds(1)), "the 30-second threshold must slow polling, not close the panel")
@@ -28,6 +53,14 @@ enum ClockPanelVisibilitySessionTests {
                 displayBounds: displays
             ),
             "titled Notification Center window must match"
+        )
+        expect(
+            ClockPanelVisibilitySession.isNotificationCenterWindow(
+                title: nil,
+                frame: CGRect(x: 1180, y: 38, width: 312, height: 320),
+                displayBounds: displays
+            ),
+            "compact top-right Calendar popover with redacted title must match"
         )
         expect(
             ClockPanelVisibilitySession.isNotificationCenterWindow(
@@ -60,6 +93,42 @@ enum ClockPanelVisibilitySessionTests {
                 displayBounds: displays
             ),
             "centered window without Notification Center title must not match"
+        )
+        expect(
+            ClockPanelVisibilitySession.isClockPanelOpen(
+                windows: [
+                    .init(
+                        id: 42,
+                        bundleIdentifier: "com.apple.MenuBarAgent",
+                        title: nil,
+                        frame: CGRect(x: 1160, y: 38, width: 320, height: 340),
+                        layer: 25,
+                        alpha: 1.0
+                    ),
+                ],
+                baselineWindowIDs: [10],
+                floatingLayerMinimum: 3,
+                displayBounds: displays
+            ),
+            "newly appeared MenuBarAgent Calendar popover must be recognized as open"
+        )
+        expect(
+            !ClockPanelVisibilitySession.isClockPanelOpen(
+                windows: [
+                    .init(
+                        id: 10,
+                        bundleIdentifier: "com.apple.MenuBarAgent",
+                        title: nil,
+                        frame: CGRect(x: 0, y: 0, width: 1512, height: 37),
+                        layer: 24,
+                        alpha: 1.0
+                    ),
+                ],
+                baselineWindowIDs: [10],
+                floatingLayerMinimum: 3,
+                displayBounds: displays
+            ),
+            "pre-existing MenuBarAgent bar window must not be mistaken for an open popover"
         )
         print("ClockPanelVisibilitySessionTests passed")
     }

@@ -13,27 +13,17 @@ final class GeneralSettingsManager: ObservableObject {
     static let defaultIceBarItemSpacing: Double = 2
     static let defaultIceBarPadding: Double = 4
 
-    /// A Boolean value that indicates whether the Ice icon
-    /// should be shown.
+    /// A Boolean value that indicates whether the Ice icon should be shown.
     @Published var showIceIcon = true
 
-    /// An icon to show in the menu bar, with a different image
-    /// for when items are visible or hidden.
+    /// An icon to show in the menu bar, with a different image for when items are visible or hidden.
     @Published var iceIcon: ControlItemImageSet = .defaultIceIcon
 
     /// The last user-selected custom Ice icon.
     @Published var lastCustomIceIcon: ControlItemImageSet?
 
-    /// A Boolean value that indicates whether custom Ice icons
-    /// should be rendered as template images.
+    /// A Boolean value that indicates whether custom Ice icons should be rendered as template images.
     @Published var customIceIconIsTemplate = false
-
-    /// A Boolean value that indicates whether to show hidden items
-    /// in a separate bar below the menu bar.
-    @Published var useIceBar = false
-
-    /// Enables the menu bar item search panel and its shortcut.
-    @Published var enableMenuBarSearch = true
 
     /// The location where the Ice Bar appears.
     @Published var iceBarLocation: IceBarLocation = .dynamic
@@ -50,34 +40,33 @@ final class GeneralSettingsManager: ObservableObject {
     /// The padding around the Ice Bar background.
     @Published var iceBarPadding: Double = GeneralSettingsManager.defaultIceBarPadding
 
-    /// A Boolean value that indicates whether the hidden section
-    /// should be shown when the mouse pointer clicks in an empty
-    /// area of the menu bar.
+    /// A Boolean value that indicates whether the hidden section should be shown when
+    /// clicking in an empty area of the menu bar.
     @Published var showOnClick = true
 
-    /// A Boolean value that indicates whether the hidden section
-    /// should be shown when the mouse pointer hovers over an
-    /// empty area of the menu bar.
-    @Published var showOnHover = false
-
-    /// A Boolean value that indicates whether the hidden section
-    /// should be shown or hidden when the user scrolls in the
-    /// menu bar.
-    @Published var showOnScroll = true
+    /// A Boolean value that indicates whether right-clicking empty menu bar space opens Ice's menu.
+    @Published var showContextMenuOnRightClick = true
 
     /// The offset to apply to the menu bar item spacing and padding.
     @Published var itemSpacingOffset: Double = 0
 
-    /// A Boolean value that indicates whether the hidden section
-    /// should automatically rehide.
+    /// A Boolean value that indicates whether the Ice Bar should automatically rehide.
     @Published var autoRehide = true
 
     /// A strategy that determines how the auto-rehide feature works.
     @Published var rehideStrategy: RehideStrategy = .smart
 
-    /// A time interval for the auto-rehide feature when its rule
-    /// is ``RehideStrategy/timed``.
+    /// A time interval for the auto-rehide feature when its rule is ``RehideStrategy/timed``.
     @Published var rehideInterval: TimeInterval = 15
+
+    /// How long a clicked hidden item remains visible in the menu bar after its menu closes.
+    @Published var tempShowInterval: TimeInterval = 15
+
+    /// A Boolean value that indicates whether the Always-Hidden third section is enabled.
+    @Published var enableAlwaysHiddenSection = false
+
+    /// A Boolean value that indicates whether Option-clicking toggles the Always-Hidden section.
+    @Published var canToggleAlwaysHiddenSection = true
 
     /// Encoder for properties.
     private let encoder = JSONEncoder()
@@ -103,11 +92,10 @@ final class GeneralSettingsManager: ObservableObject {
     private func loadInitialState() {
         Defaults.ifPresent(key: .showIceIcon, assign: &showIceIcon)
         Defaults.ifPresent(key: .customIceIconIsTemplate, assign: &customIceIconIsTemplate)
-        Defaults.ifPresent(key: .useIceBar, assign: &useIceBar)
-        Defaults.ifPresent(key: .enableMenuBarSearch, assign: &enableMenuBarSearch)
         Defaults.ifPresent(key: .showOnClick, assign: &showOnClick)
-        Defaults.ifPresent(key: .showOnHover, assign: &showOnHover)
-        Defaults.ifPresent(key: .showOnScroll, assign: &showOnScroll)
+        Defaults.ifPresent(key: .showContextMenuOnRightClick, assign: &showContextMenuOnRightClick)
+        Defaults.ifPresent(key: .enableAlwaysHiddenSection, assign: &enableAlwaysHiddenSection)
+        Defaults.ifPresent(key: .canToggleAlwaysHiddenSection, assign: &canToggleAlwaysHiddenSection)
         Defaults.ifPresent(key: .itemSpacingOffset) { (value: Double) in
             itemSpacingOffset = clampedValue(value, in: -16...16, defaultValue: 0)
         }
@@ -115,6 +103,9 @@ final class GeneralSettingsManager: ObservableObject {
         Defaults.ifPresent(key: .autoRehide, assign: &autoRehide)
         Defaults.ifPresent(key: .rehideInterval) { (value: TimeInterval) in
             rehideInterval = clampedValue(value, in: 0...30, defaultValue: 15)
+        }
+        Defaults.ifPresent(key: .tempShowInterval) { (value: TimeInterval) in
+            tempShowInterval = clampedValue(value, in: 0...30, defaultValue: 15)
         }
 
         Defaults.ifPresent(key: .iceBarLocation) { rawValue in
@@ -203,46 +194,6 @@ final class GeneralSettingsManager: ObservableObject {
             }
             .store(in: &c)
 
-        $useIceBar
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { useIceBar in
-                Defaults.set(useIceBar, forKey: .useIceBar)
-            }
-            .store(in: &c)
-
-        // Only an actual change of mode needs to collapse the sections and
-        // reclassify items; the value loaded at launch is not a change.
-        $useIceBar
-            .removeDuplicates()
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let appState = self?.appState else {
-                    return
-                }
-                appState.menuBarManager.iceBarPanel.close()
-                for section in appState.menuBarManager.sections {
-                    section.controlItem.state = .hideItems
-                }
-                Task {
-                    await appState.itemManager.cacheItemsIfNeeded()
-                }
-            }
-            .store(in: &c)
-
-        $enableMenuBarSearch
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] enabled in
-                Defaults.set(enabled, forKey: .enableMenuBarSearch)
-                guard let appState = self?.appState else { return }
-                if !enabled { appState.menuBarManager.searchPanel.close() }
-                // Re-register only when enabled; retain the saved combination.
-                appState.settingsManager.hotkeySettingsManager.hotkey(withAction: .searchMenuBarItems)?.setRegistrationAllowed(enabled)
-            }
-            .store(in: &c)
-
         $iceBarLocation
             .receive(on: DispatchQueue.main)
             .sink { location in
@@ -285,17 +236,10 @@ final class GeneralSettingsManager: ObservableObject {
             }
             .store(in: &c)
 
-        $showOnHover
+        $showContextMenuOnRightClick
             .receive(on: DispatchQueue.main)
-            .sink { showOnHover in
-                Defaults.set(showOnHover, forKey: .showOnHover)
-            }
-            .store(in: &c)
-
-        $showOnScroll
-            .receive(on: DispatchQueue.main)
-            .sink { showOnScroll in
-                Defaults.set(showOnScroll, forKey: .showOnScroll)
+            .sink { showContextMenu in
+                Defaults.set(showContextMenu, forKey: .showContextMenuOnRightClick)
             }
             .store(in: &c)
 
@@ -324,8 +268,48 @@ final class GeneralSettingsManager: ObservableObject {
 
         $rehideInterval
             .receive(on: DispatchQueue.main)
-            .sink { interval in
-                Defaults.set(interval, forKey: .rehideInterval)
+            .sink { [weak self] interval in
+                let sanitized = self?.clampedValue(interval, in: 0...30, defaultValue: 15) ?? 15
+                Defaults.set(sanitized, forKey: .rehideInterval)
+            }
+            .store(in: &c)
+
+        $tempShowInterval
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] interval in
+                let sanitized = self?.clampedValue(interval, in: 0...30, defaultValue: 15) ?? 15
+                Defaults.set(sanitized, forKey: .tempShowInterval)
+            }
+            .store(in: &c)
+
+        $enableAlwaysHiddenSection
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { enabled in
+                Defaults.set(enabled, forKey: .enableAlwaysHiddenSection)
+            }
+            .store(in: &c)
+
+        $enableAlwaysHiddenSection
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let appState = self?.appState else {
+                    return
+                }
+                if !enabled, appState.menuBarManager.iceBarPanel.currentSection == .alwaysHidden {
+                    appState.menuBarManager.iceBarPanel.close()
+                }
+                appState.itemManager.cacheHostedItems()
+                appState.menuBarManager.hostedItemVisibilityManager.refreshNow()
+            }
+            .store(in: &c)
+
+        $canToggleAlwaysHiddenSection
+            .receive(on: DispatchQueue.main)
+            .sink { canToggle in
+                Defaults.set(canToggle, forKey: .canToggleAlwaysHiddenSection)
             }
             .store(in: &c)
 

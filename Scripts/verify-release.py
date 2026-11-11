@@ -28,6 +28,7 @@ EXPECTED_FEED_URL = "https://raw.githubusercontent.com/thunder951413/ice/updates
 SHA256SUMS = re.compile(r"([0-9a-fA-F]{64})[ \t]+\*?Ice\.zip\Z")
 FAT_MAGIC = 0xCAFEBABE
 FAT_MAGIC_64 = 0xCAFEBABF
+MH_MAGIC_64 = 0xFEEDFACF
 CPU_TYPE_X86_64 = 0x01000007
 CPU_TYPE_ARM64 = 0x0100000C
 
@@ -127,13 +128,31 @@ def read_bundle_from_zip(path: Path) -> tuple[dict[str, object], bytes]:
         fail(f"cannot read bundled Info.plist: {error}")
 
 
-def verify_universal_macho(header: bytes) -> None:
+def parse_major_macos_version(info: dict[str, object]) -> int:
+    raw = str(info.get("LSMinimumSystemVersion", "")).strip()
+    match = re.match(r"([0-9]+)", raw)
+    return int(match.group(1)) if match else 0
+
+
+def verify_macho_binary(header: bytes, require_x86_64: bool = False) -> None:
     if len(header) < 8:
         fail("bundled executable is too small to be a valid Mach-O binary")
+    le_magic, le_cputype = struct.unpack_from("<II", header, 0)
+    if le_magic == MH_MAGIC_64:
+        if require_x86_64:
+            fail("bundled executable must be a universal (arm64 + x86_64) Mach-O binary")
+        if le_cputype != CPU_TYPE_ARM64:
+            fail("single-architecture bundled executable must target arm64")
+        return
+
     magic, nfat_arch = struct.unpack_from(">II", header, 0)
     if magic not in (FAT_MAGIC, FAT_MAGIC_64):
-        fail("bundled executable must be a universal (arm64 + x86_64) Mach-O binary")
-    if nfat_arch < 2 or nfat_arch > 16:
+        if require_x86_64:
+            fail("bundled executable must be a universal (arm64 + x86_64) Mach-O binary")
+        fail("bundled executable is not a valid 64-bit or fat Mach-O binary")
+    if nfat_arch < 1 or nfat_arch > 16:
+        fail(f"unexpected Mach-O fat slice count: {nfat_arch}")
+    if require_x86_64 and nfat_arch < 2:
         fail(f"unexpected Mach-O fat slice count: {nfat_arch}")
     entry_size = 20 if magic == FAT_MAGIC else 32
     required_bytes = 8 + (nfat_arch * entry_size)
@@ -146,10 +165,14 @@ def verify_universal_macho(header: bytes) -> None:
     missing = []
     if CPU_TYPE_ARM64 not in cpu_types:
         missing.append("arm64")
-    if CPU_TYPE_X86_64 not in cpu_types:
+    if require_x86_64 and CPU_TYPE_X86_64 not in cpu_types:
         missing.append("x86_64")
     if missing:
         fail(f"bundled executable is missing required architecture(s): {', '.join(missing)}")
+
+
+def verify_universal_macho(header: bytes) -> None:
+    verify_macho_binary(header, require_x86_64=True)
 
 
 def resolve_openssl() -> str:
@@ -238,7 +261,8 @@ def verify(args: argparse.Namespace) -> None:
     except (OSError, plistlib.InvalidFileException) as error:
         fail(f"cannot read repository Info.plist: {error}")
     bundled_info, binary_header = read_bundle_from_zip(zip_path)
-    verify_universal_macho(binary_header)
+    min_major = parse_major_macos_version(bundled_info)
+    verify_macho_binary(binary_header, require_x86_64=(min_major < 27))
     metadata = appcast_metadata(appcast_path)
     short_version = str(bundled_info.get("CFBundleShortVersionString", ""))
     if tag[1:] != short_version:

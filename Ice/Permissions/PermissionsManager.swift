@@ -12,8 +12,7 @@ final class PermissionsManager: ObservableObject {
     /// The state of the granted permissions for the app.
     enum PermissionsState {
         case missingPermissions
-        case hasAllPermissions
-        case hasRequiredPermissions
+        case hasPermissions
     }
 
     /// The state of the granted permissions for the app.
@@ -21,25 +20,17 @@ final class PermissionsManager: ObservableObject {
 
     let accessibilityPermission: AccessibilityPermission
 
-    let screenRecordingPermission: ScreenRecordingPermission
-
     let allPermissions: [Permission]
 
     private(set) weak var appState: AppState?
 
     private var cancellables = Set<AnyCancellable>()
 
-    var requiredPermissions: [Permission] {
-        allPermissions.filter { $0.isRequired }
-    }
-
     init(appState: AppState) {
         self.appState = appState
         self.accessibilityPermission = AccessibilityPermission()
-        self.screenRecordingPermission = ScreenRecordingPermission()
         self.allPermissions = [
             accessibilityPermission,
-            screenRecordingPermission,
         ]
         configureCancellables()
     }
@@ -47,31 +38,24 @@ final class PermissionsManager: ObservableObject {
     private func configureCancellables() {
         var c = Set<AnyCancellable>()
 
-        Publishers.Merge(
-            accessibilityPermission.$hasPermission.mapToVoid(),
-            screenRecordingPermission.$hasPermission.mapToVoid()
-        )
-        .receive(on: DispatchQueue.main)
-        .sink { [weak self] in
-            guard let self else {
-                return
+        accessibilityPermission.$hasPermission
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] hasPermission in
+                guard let self else {
+                    return
+                }
+                permissionsState = hasPermission ? .hasPermissions : .missingPermissions
             }
-            if allPermissions.allSatisfy({ $0.hasPermission }) {
-                permissionsState = .hasAllPermissions
-            } else if requiredPermissions.allSatisfy({ $0.hasPermission }) {
-                permissionsState = .hasRequiredPermissions
-            } else {
-                permissionsState = .missingPermissions
-            }
-        }
-        .store(in: &c)
+            .store(in: &c)
 
         cancellables = c
     }
 
     /// Low-frequency runtime revalidation after onboarding has stopped polling.
     func refreshPermissions() {
-        for permission in allPermissions { permission.refresh() }
+        for permission in allPermissions {
+            permission.refresh()
+        }
     }
 
     /// Stops running all permissions checks.

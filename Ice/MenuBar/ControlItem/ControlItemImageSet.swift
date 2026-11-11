@@ -5,7 +5,7 @@
 
 /// A named set of images that are used by control items.
 ///
-/// An image set contains images for a control item in both the hidden and visible states.
+/// An image set contains images for the Ice status item in both the collapsed and expanded states.
 struct ControlItemImageSet: Codable, Hashable, Identifiable {
     enum Name: String, Codable, Hashable {
         case arrow = "Arrow"
@@ -16,6 +16,19 @@ struct ControlItemImageSet: Codable, Hashable, Identifiable {
         case iceCube = "Ice Cube"
         case sunglasses = "Sunglasses"
         case custom = "Custom"
+
+        var localizedTitle: String {
+            switch self {
+            case .arrow: "箭头"
+            case .chevron: "折叠箭头"
+            case .door: "门扉"
+            case .dot: "圆点"
+            case .ellipsis: "省略号"
+            case .iceCube: "冰块"
+            case .sunglasses: "墨镜"
+            case .custom: "自定义图片"
+            }
+        }
     }
 
     let name: Name

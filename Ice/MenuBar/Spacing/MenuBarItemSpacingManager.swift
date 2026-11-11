@@ -13,7 +13,6 @@ final class MenuBarItemSpacingManager {
         case spacing = "NSStatusItemSpacing"
         case padding = "NSStatusItemSelectionPadding"
 
-        /// The default value for the key.
         var defaultValue: Int {
             switch self {
             case .spacing: 16
@@ -27,23 +26,22 @@ final class MenuBarItemSpacingManager {
         let failedApps: [String]
 
         var errorDescription: String? {
-            "The following applications could not be restarted:\n" + failedApps.sorted().joined(separator: "\n")
+            "以下应用未能自动重启以应用新间距：\n" + failedApps.sorted().joined(separator: "\n")
         }
 
         var recoverySuggestion: String? {
-            "Applications that did not quit were left running. Finish saving, then quit and reopen them manually."
+            "未退出的应用保持原状运行；请在保存未完成的工作后手动退出并重开这些应用。"
         }
     }
 
     /// The offset to apply to the default spacing and padding.
-    /// Does not take effect until ``applyOffset()`` is called.
     var offset = 0
 
-    /// Use the preferences API so deleting an already-absent key is harmless,
-    /// and a failed write cannot silently proceed to application restarts.
     private func writePreferences() throws {
         struct WriteError: LocalizedError {
-            var errorDescription: String? { "Could not save menu bar spacing. Applications were left running." }
+            var errorDescription: String? {
+                "无法写入系统菜单栏间距配置，所有应用保持原状运行。"
+            }
         }
         for key in Key.allCases {
             let value = offset == 0 ? nil : NSNumber(value: key.defaultValue + offset)
@@ -55,31 +53,31 @@ final class MenuBarItemSpacingManager {
                 kCFPreferencesCurrentHost
             )
         }
-        guard CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost) else {
+        guard CFPreferencesSynchronize(
+            kCFPreferencesAnyApplication,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesCurrentHost
+        ) else {
             throw WriteError()
         }
     }
 
-    /// Returns a log string for the given app.
     private nonisolated func logString(for app: NSRunningApplication) -> String {
         app.localizedName ?? app.bundleIdentifier ?? "<NIL>"
     }
 
-    /// Asynchronously signals the given app to quit.
     private func signalAppToQuit(_ app: NSRunningApplication) async throws {
         if app.isTerminated {
             Logger.spacing.debug("Application \"\(logString(for: app))\" is already terminated")
             return
-        } else {
-            Logger.spacing.debug("Signaling application \"\(logString(for: app))\" to quit")
         }
-
+        Logger.spacing.debug("Signaling application \"\(logString(for: app))\" to quit")
         try await GracefulApplicationTermination.terminate(
-            isTerminated: { app.isTerminated }, requestTermination: { app.terminate() }
+            isTerminated: { app.isTerminated },
+            requestTermination: { app.terminate() }
         )
     }
 
-    /// Asynchronously launches the app at the given URL.
     private func launchApp(at applicationURL: URL, bundleIdentifier: String) async throws {
         if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
             Logger.spacing.debug("Application \"\(logString(for: app))\" is already open, so skipping launch")
@@ -93,7 +91,6 @@ final class MenuBarItemSpacingManager {
         try await NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
     }
 
-    /// Asynchronously relaunches the given app.
     private func relaunchApp(_ app: NSRunningApplication) async throws {
         struct RelaunchError: Error { }
         guard
@@ -110,16 +107,14 @@ final class MenuBarItemSpacingManager {
         }
     }
 
-    /// Applies the current ``offset``.
-    ///
-    /// - Note: This requests cooperative restarts; apps can decline or wait for saving.
-    func applyOffset() async throws {
+    /// Applies the current ``offset`` and cooperatively restarts menu bar apps.
+    func applyOffset(additionalPIDs: Set<pid_t> = []) async throws {
         try writePreferences()
 
         try? await Task.sleep(for: .milliseconds(100))
 
         let items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
-        let pids = Set(items.map { $0.ownerPID })
+        let pids = Set(items.map(\.ownerPID)).union(additionalPIDs)
 
         var failedApps = [String]()
 
@@ -146,9 +141,9 @@ final class MenuBarItemSpacingManager {
                             return
                         }
                         if app.bundleIdentifier == "com.apple.Spotlight" {
-                            // Spotlight automatically relaunches, so only consider it a failure if it never quit.
                             if
-                                let latestSpotlightInstance = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Spotlight").first,
+                                let latestSpotlightInstance = NSRunningApplication
+                                    .runningApplications(withBundleIdentifier: "com.apple.Spotlight").first,
                                 latestSpotlightInstance.processIdentifier == app.processIdentifier
                             {
                                 failedApps.append(name)

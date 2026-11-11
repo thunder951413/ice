@@ -81,9 +81,14 @@ class ReleaseVerifierTests(unittest.TestCase):
         )
         verify_release.verify_universal_macho(fat_header)
 
-        single_arch_header = struct.pack(">IIIIIII", 0xFEEDFACF, verify_release.CPU_TYPE_ARM64, 0, 2, 0, 0, 0)
+        single_arch_header = struct.pack("<IIIIIII", verify_release.MH_MAGIC_64, verify_release.CPU_TYPE_ARM64, 0, 2, 0, 0, 0)
         with self.assertRaisesRegex(verify_release.VerificationError, "universal"):
             verify_release.verify_universal_macho(single_arch_header)
+        verify_release.verify_macho_binary(single_arch_header, require_x86_64=False)
+
+        x86_only_header = struct.pack("<IIIIIII", verify_release.MH_MAGIC_64, verify_release.CPU_TYPE_X86_64, 0, 2, 0, 0, 0)
+        with self.assertRaisesRegex(verify_release.VerificationError, "arm64"):
+            verify_release.verify_macho_binary(x86_only_header, require_x86_64=False)
 
         arm64_only_fat = struct.pack(
             ">II" + ("IIIII" * 2),
