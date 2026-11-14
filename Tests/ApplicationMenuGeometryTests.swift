@@ -8,6 +8,7 @@ enum ApplicationMenuGeometryTests {
         testGenuineBlankSpaceIsAllowed()
         testMissingAndInvalidSnapshotsFailClosed()
         testWrongDisplaySnapshotFailsClosed()
+        testProjectingActiveDisplayMenuOntoSecondaryDisplay()
         testSecondaryDisplayCoordinates()
         testFrameUnionIncludesEveryTitle()
         testHostedSnapshotFailureAndIconColumns()
@@ -113,6 +114,29 @@ enum ApplicationMenuGeometryTests {
             expected: CGRect(x: 0, y: 984, width: 120, height: 24),
             name: "below"
         )
+    }
+
+    private static func testProjectingActiveDisplayMenuOntoSecondaryDisplay() {
+        let activeMenu = CGRect(x: 0, y: 0, width: 600, height: 33)
+        let secondary = CGRect(x: -98, y: -1080, width: 1920, height: 1080)
+        let menu = ApplicationMenuGeometry.projectedFrame(activeMenu, on: secondary)
+        let itemFrames = [
+            CGRect(x: 1121, y: 0, width: 38, height: 33),
+            CGRect(x: 1253, y: -1080, width: 34, height: 30),
+        ]
+        func empty(_ x: CGFloat) -> Bool {
+            ApplicationMenuGeometry.isEmptyHostedSpace(
+                at: CGPoint(x: x, y: -1068), applicationMenuFrame: menu,
+                itemFrames: itemFrames, displayBounds: secondary
+            )
+        }
+        expect(menu?.maxX == 502, "the title span should be relative to the clicked display")
+        expect(!empty(500), "the projected application menu must stay protected")
+        expect(empty(650), "blank space on the secondary display must be usable")
+        expect(empty(1125), "a status item on the other display must not block this click")
+        expect(!empty(1255), "the secondary display's own status items must stay protected")
+        expect(ApplicationMenuGeometry.projectedFrame(activeMenu, on: CGRect(x: 0, y: 0, width: 599, height: 800)) == nil,
+               "a title span that cannot fit on the target display must be rejected")
     }
 
     private static func testFrameUnionIncludesEveryTitle() {

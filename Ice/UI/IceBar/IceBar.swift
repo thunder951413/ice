@@ -143,7 +143,7 @@ final class IceBarPanel: NSPanel {
         setFrameOrigin(getOrigin(for: appState.settingsManager.generalSettingsManager.iceBarLocation))
     }
 
-    func show(section: MenuBarSection.Name, on screen: NSScreen) async {
+    func show(section: MenuBarSection.Name, on screen: NSScreen, menuBarClickX: CGFloat? = nil) async {
         guard let appState else {
             return
         }
@@ -151,11 +151,11 @@ final class IceBarPanel: NSPanel {
         targetScreen = screen
         let configuredLocation = appState.settingsManager.generalSettingsManager.iceBarLocation
         let effectiveLocation: IceBarLocation = if configuredLocation == .dynamic {
-            appState.eventManager.isMouseInsideEmptyMenuBarSpace ? .mousePointer : .iceIcon
+            menuBarClickX != nil || appState.eventManager.isMouseInsideEmptyMenuBarSpace ? .mousePointer : .iceIcon
         } else {
             configuredLocation
         }
-        resolvedAnchor = (effectiveLocation, MouseCursor.locationAppKit?.x)
+        resolvedAnchor = (effectiveLocation, menuBarClickX ?? MouseCursor.locationAppKit?.x)
         appState.navigationState.isIceBarPresented = true
         currentSection = section
 

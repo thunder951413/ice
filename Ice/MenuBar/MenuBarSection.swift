@@ -81,14 +81,6 @@ final class MenuBarSection {
         appState?.menuBarManager.iceBarPanel
     }
 
-    /// The best screen to show the Ice Bar on.
-    private var screenForIceBar: NSScreen? {
-        guard appState != nil else {
-            return nil
-        }
-        return NSScreen.screenWithMouse ?? NSScreen.main
-    }
-
     /// A Boolean value that indicates whether the section's Ice Bar presentation is currently closed.
     var isHidden: Bool {
         switch name {
@@ -131,16 +123,14 @@ final class MenuBarSection {
     }
 
     /// Shows the section in the Ice Bar.
-    func show() {
-        guard isEnabled, isHidden else {
+    func show(on screen: NSScreen? = nil, menuBarClickX: CGFloat? = nil) {
+        guard isEnabled, isHidden, let screen = screen ?? NSScreen.screenWithMouse ?? NSScreen.main else {
             return
         }
         let targetSection: Name = name == .alwaysHidden ? .alwaysHidden : .hidden
         Logger.menuBarSection.info("Showing \(targetSection.logString) in Ice Bar")
         Task {
-            if let screenForIceBar {
-                await iceBarPanel?.show(section: targetSection, on: screenForIceBar)
-            }
+            await iceBarPanel?.show(section: targetSection, on: screen, menuBarClickX: menuBarClickX)
         }
         startRehideChecks()
     }
@@ -156,9 +146,9 @@ final class MenuBarSection {
     }
 
     /// Toggles the visibility of the section.
-    func toggle() {
+    func toggle(on screen: NSScreen? = nil, menuBarClickX: CGFloat? = nil) {
         if isHidden {
-            show()
+            show(on: screen, menuBarClickX: menuBarClickX)
         } else {
             hide()
         }

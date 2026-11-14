@@ -92,7 +92,7 @@ enum HostedMenuBarBackend {
     private static let logger = Logger(category: "HostedMenuBarBackend")
     private static var hitFrameCache = [String: (date: Date, frame: CGRect)]()
     private struct RenderedItem {
-        let element: AXUIElement
+        let element: AXUIElement?
         let pid: pid_t
         let displayID: CGDirectDisplayID
         let frame: CGRect
@@ -788,7 +788,7 @@ enum HostedMenuBarBackend {
         let sourceStrings = Set(source.identityStrings)
         let matches = candidates.filter { candidate in
             guard candidate.pid == source.sourcePID else { return false }
-            if CFEqual(candidate.element, source.element) { return true }
+            if let element = candidate.element, CFEqual(element, source.element) { return true }
             if source.sourceBundleIdentifier == "com.apple.MenuBarAgent" {
                 return !sourceStrings.isEmpty && !sourceStrings.isDisjoint(with: candidate.identityStrings)
             }
@@ -849,7 +849,7 @@ enum HostedMenuBarBackend {
         var visited = Set<AXUIElement>()
         var result = [RenderedItem]()
         var complete = true
-        func visit(_ element: AXUIElement, depth: Int) {
+        func visit(_ element: AXUIElement, parent: AXUIElement? = nil, depth: Int) {
             guard complete, visited.insert(element).inserted else { return }
             guard depth > 0, remainingNodes > 0, ContinuousClock.now < deadline else {
                 logger.debug("Rendered menu bar scan reached its time, depth or node budget")
@@ -867,6 +867,23 @@ enum HostedMenuBarBackend {
             case .failed(let error):
                 logger.debug("Rendered menu bar role read failed: \(error.rawValue)")
                 complete = false
+                return
+            }
+            if role == kAXApplicationRole as String || role == kAXUnknownRole as String {
+                // Inactive displays can expose the source application in
+                // place of a status item. The host group still has its
+                // rendered bounds, while the application leads to its
+                // regular windows and menu bar on another display.
+                var pid: pid_t = 0
+                guard let parent, AXUIElementGetPid(element, &pid) == .success,
+                      let frame = frame(of: parent)
+                else {
+                    complete = false
+                    return
+                }
+                if let displayID = matchingMenuBarDisplayID(for: frame, displays: displays) {
+                    result.append(RenderedItem(element: nil, pid: pid, displayID: displayID, frame: frame, identityStrings: []))
+                }
                 return
             }
             if role == kAXButtonRole as String || role == kAXMenuBarItemRole as String {
@@ -897,7 +914,7 @@ enum HostedMenuBarBackend {
             }
             switch attributeRead(kAXChildrenAttribute, of: element) as AttributeRead<[AXUIElement]> {
             case .value(let children):
-                for child in children { visit(child, depth: depth - 1) }
+                for child in children { visit(child, parent: element, depth: depth - 1) }
             case .absent: break
             case .failed(let error):
                 logger.debug("Rendered menu bar children read failed: \(error.rawValue)")

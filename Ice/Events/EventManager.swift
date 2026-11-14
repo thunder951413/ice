@@ -91,8 +91,7 @@ extension EventManager {
         guard
             let appState,
             appState.settingsManager.generalSettingsManager.showOnClick,
-            isMouseInsideMenuBar,
-            !isMouseInsideNotch
+            let click = menuBarClick(with: event)
         else {
             return
         }
@@ -101,15 +100,17 @@ extension EventManager {
             option: event.modifierFlags.contains(.option),
             control: event.modifierFlags.contains(.control)
         )
-        let menuLocation = MouseCursor.locationAppKit
         Task {
             guard
-                await isEmptyMenuBarClick(event),
+                await isEmptyMenuBarClick(at: click.point, on: click.screen),
                 appState.settingsManager.generalSettingsManager.showOnClick
             else {
                 return
             }
             do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard let screen = NSScreen.screens.first(where: { $0.displayID == click.screen.displayID }) else {
+                return
+            }
 
             let general = appState.settingsManager.generalSettingsManager
             let action = MenuBarClickPolicy.resolve(
@@ -119,13 +120,13 @@ extension EventManager {
             )
             switch action {
             case .showMenu:
-                if let menuLocation, general.showContextMenuOnRightClick {
-                    appState.menuBarManager.showRightClickMenu(at: menuLocation)
+                if general.showContextMenuOnRightClick {
+                    appState.menuBarManager.showRightClickMenu(at: click.appKitPoint)
                 }
             case .toggleAlwaysHidden:
-                appState.menuBarManager.section(withName: .alwaysHidden)?.toggle()
+                appState.menuBarManager.section(withName: .alwaysHidden)?.toggle(on: screen, menuBarClickX: click.point.x)
             case .toggleHidden:
-                appState.menuBarManager.section(withName: .hidden)?.toggle()
+                appState.menuBarManager.section(withName: .hidden)?.toggle(on: screen, menuBarClickX: click.point.x)
             }
         }
     }
@@ -203,31 +204,35 @@ extension EventManager {
         guard
             let appState,
             appState.settingsManager.generalSettingsManager.showContextMenuOnRightClick,
-            isMouseInsideMenuBar,
-            !isMouseInsideNotch,
-            let mouseLocation = MouseCursor.locationAppKit
+            let click = menuBarClick(with: event)
         else {
             return
         }
         Task {
             guard
-                await isEmptyMenuBarClick(event),
+                await isEmptyMenuBarClick(at: click.point, on: click.screen),
                 appState.settingsManager.generalSettingsManager.showContextMenuOnRightClick
             else {
                 return
             }
-            appState.menuBarManager.showRightClickMenu(at: mouseLocation)
+            appState.menuBarManager.showRightClickMenu(at: click.appKitPoint)
         }
     }
 
-    private func isEmptyMenuBarClick(_ event: NSEvent) async -> Bool {
+    private func menuBarClick(with event: NSEvent) -> (screen: NSScreen, point: CGPoint, appKitPoint: CGPoint)? {
         guard
-            let appState,
-            let screen = bestScreen,
-            let point = event.cgEvent?.location ?? MouseCursor.locationCoreGraphics
+            let cgEvent = event.cgEvent,
+            let screen = NSScreen.screens.first(where: { CGDisplayBounds($0.displayID).contains(cgEvent.location) }),
+            isInsideMenuBar(on: screen, at: cgEvent.location, appKitPoint: cgEvent.unflippedLocation),
+            screen.frameOfNotch?.contains(cgEvent.unflippedLocation) != true
         else {
-            return false
+            return nil
         }
+        return (screen, cgEvent.location, cgEvent.unflippedLocation)
+    }
+
+    private func isEmptyMenuBarClick(at point: CGPoint, on screen: NSScreen) async -> Bool {
+        guard let appState else { return false }
         let displayID = screen.displayID
         let bounds = CGDisplayBounds(displayID)
         let menuOwner = NSWorkspace.shared.menuBarOwningApplication?.processIdentifier
@@ -462,24 +467,21 @@ extension EventManager {
     var isMouseInsideMenuBar: Bool {
         guard
             let screen = bestScreen,
-            let appState
+            let cursor = CGEvent(source: nil)
         else {
             return false
         }
-        if appState.menuBarManager.isMenuBarHiddenBySystem || appState.isActiveSpaceFullscreen {
-            if
-                let mouseLocation = MouseCursor.locationCoreGraphics,
-                let menuBarFrame = menuBarWindowFrame(for: screen.displayID)
-            {
-                return menuBarFrame.contains(mouseLocation)
-            }
-        } else if let mouseLocation = MouseCursor.locationAppKit {
-            return mouseLocation.x >= screen.frame.minX
-                && mouseLocation.x < screen.frame.maxX
-                && mouseLocation.y > screen.visibleFrame.maxY
-                && mouseLocation.y <= screen.frame.maxY
+        return isInsideMenuBar(on: screen, at: cursor.location, appKitPoint: cursor.unflippedLocation)
+    }
+
+    private func isInsideMenuBar(on screen: NSScreen, at point: CGPoint, appKitPoint: CGPoint) -> Bool {
+        guard let appState else { return false }
+        if !appState.menuBarManager.isMenuBarHiddenBySystem,
+           !appState.isActiveSpaceFullscreen,
+           screen.visibleFrame.maxY < screen.frame.maxY {
+            return screen.menuBarContains(appKitPoint)
         }
-        return false
+        return menuBarWindowFrame(for: screen.displayID)?.contains(point) == true
     }
 
     private func menuBarWindowFrame(for displayID: CGDirectDisplayID) -> CGRect? {

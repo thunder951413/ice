@@ -184,12 +184,14 @@ final class MenuBarManager: ObservableObject {
 
     private func readApplicationMenuFrame(for displayID: CGDirectDisplayID) -> CGRect? {
         let displayBounds = CGDisplayBounds(displayID)
+        var ownerMenuBar: UIElement?
 
         if let owner = NSWorkspace.shared.menuBarOwningApplication,
            let application = Application(forProcessID: owner.processIdentifier) {
             application.messagingTimeout = 0.05
-            if let menuBar: UIElement = try? application.attribute(.menuBar),
-               let frame = applicationMenuFrame(from: menuBar, displayBounds: displayBounds) {
+            ownerMenuBar = try? application.attribute(.menuBar)
+            if let ownerMenuBar,
+               let frame = applicationMenuFrame(from: ownerMenuBar, displayBounds: displayBounds) {
                 return frame
             }
         }
@@ -201,7 +203,21 @@ final class MenuBarManager: ObservableObject {
         else {
             return nil
         }
-        return applicationMenuFrame(from: menuBar, displayBounds: displayBounds)
+        if let frame = applicationMenuFrame(from: menuBar, displayBounds: displayBounds) {
+            return frame
+        }
+        // A secondary display can return the active display's AXMenuBar even
+        // when the hit test is inside its own visible menu bar window.
+        guard let ownerMenuBar, menuBar == ownerMenuBar,
+              let proxyFrame: CGRect = try? menuBar.attribute(.frame),
+              let sourceScreen = NSScreen.screens.first(where: { screen in
+                  screen.displayID != displayID && CGDisplayBounds(screen.displayID).origin == proxyFrame.origin
+              }),
+              let sourceFrame = applicationMenuFrame(from: menuBar, displayBounds: CGDisplayBounds(sourceScreen.displayID))
+        else {
+            return nil
+        }
+        return ApplicationMenuGeometry.projectedFrame(sourceFrame, on: displayBounds)
     }
 
     private func applicationMenuFrame(from menuBar: UIElement, displayBounds: CGRect) -> CGRect? {

@@ -39,6 +39,18 @@ enum ApplicationMenuGeometry {
         return point.x > applicationMenuFrame.maxX
     }
 
+    /// Projects the title span when the system-wide hit test returns the same
+    /// application menu proxy on another display.
+    static func projectedFrame(_ frame: CGRect, on displayBounds: CGRect) -> CGRect? {
+        guard frame.width > 0, frame.width < displayBounds.width else { return nil }
+        return CGRect(
+            x: displayBounds.minX,
+            y: displayBounds.minY,
+            width: frame.width,
+            height: frame.height
+        )
+    }
+
     static func isEmptyHostedSpace(
         at point: CGPoint, applicationMenuFrame: CGRect?, itemFrames: [CGRect]?, displayBounds: CGRect
     ) -> Bool {
