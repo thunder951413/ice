@@ -4,7 +4,10 @@ root="${0:A:h:h}"
 scratch_directory="$(mktemp -d "${TMPDIR:-/tmp}/ice-hosted-rendered-matching.XXXXXX")"
 trap 'rm -rf "$scratch_directory"' EXIT
 xcrun swiftc \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarItemHandle.swift" \
     "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend.swift" \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend+Enumeration.swift" \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend+RenderedSnapshot.swift" \
     "$root/Ice/MenuBar/MenuBarItems/HostedEnumerationScanPolicy.swift" \
     "$root/Ice/Utilities/AsyncSnapshotCache.swift" \
     "$root/Tests/HostedRenderedMatchingTests.swift" \
@@ -14,7 +17,10 @@ xcrun swiftc \
 # Keep the standalone live AX smoke harness verified at compile time even when
 # Accessibility-dependent runtime execution is skipped.
 xcrun swiftc \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarItemHandle.swift" \
     "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend.swift" \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend+Enumeration.swift" \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend+RenderedSnapshot.swift" \
     "$root/Ice/MenuBar/MenuBarItems/HostedEnumerationScanPolicy.swift" \
     "$root/Ice/Utilities/AsyncSnapshotCache.swift" \
     "$root/Tests/HostedSnapshotSmoke.swift" \

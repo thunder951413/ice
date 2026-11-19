@@ -3,7 +3,7 @@
 //  Ice
 //
 
-import AXSwift
+import ApplicationServices
 import Cocoa
 import Combine
 
@@ -156,10 +156,11 @@ final class AccessibilityPermission: Permission {
             isRequired: true,
             settingsURL: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"),
             check: {
-                checkIsProcessTrusted()
+                AXIsProcessTrusted()
             },
             request: {
-                checkIsProcessTrusted(prompt: true)
+                let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(options)
             }
         )
     }

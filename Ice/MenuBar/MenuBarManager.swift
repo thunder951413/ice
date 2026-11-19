@@ -3,7 +3,7 @@
 //  Ice
 //
 
-import AXSwift
+import ApplicationServices
 import Combine
 import SwiftUI
 
@@ -184,22 +184,31 @@ final class MenuBarManager: ObservableObject {
 
     private func readApplicationMenuFrame(for displayID: CGDirectDisplayID) -> CGRect? {
         let displayBounds = CGDisplayBounds(displayID)
-        var ownerMenuBar: UIElement?
+        var ownerMenuBar: AXUIElement?
 
-        if let owner = NSWorkspace.shared.menuBarOwningApplication,
-           let application = Application(forProcessID: owner.processIdentifier) {
-            application.messagingTimeout = 0.05
-            ownerMenuBar = try? application.attribute(.menuBar)
+        if let owner = NSWorkspace.shared.menuBarOwningApplication {
+            let application = AXUIElementCreateApplication(owner.processIdentifier)
+            AXUIElementSetMessagingTimeout(application, 0.05)
+            ownerMenuBar = axAttribute(kAXMenuBarAttribute, of: application)
             if let ownerMenuBar,
                let frame = applicationMenuFrame(from: ownerMenuBar, displayBounds: displayBounds) {
                 return frame
             }
         }
 
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, 0.05)
+        var hitElement: AXUIElement?
         guard
-            let menuBar = try? systemWideElement.elementAtPosition(Float(displayBounds.minX + 1), Float(displayBounds.minY + 12)),
-            let role = try? menuBar.role(),
-            role == .menuBar
+            AXUIElementCopyElementAtPosition(
+                systemWide,
+                Float(displayBounds.minX + 1),
+                Float(displayBounds.minY + 12),
+                &hitElement
+            ) == .success,
+            let menuBar = hitElement,
+            let role: String = axAttribute(kAXRoleAttribute, of: menuBar),
+            role == kAXMenuBarRole as String
         else {
             return nil
         }
@@ -208,8 +217,8 @@ final class MenuBarManager: ObservableObject {
         }
         // A secondary display can return the active display's AXMenuBar even
         // when the hit test is inside its own visible menu bar window.
-        guard let ownerMenuBar, menuBar == ownerMenuBar,
-              let proxyFrame: CGRect = try? menuBar.attribute(.frame),
+        guard let ownerMenuBar, CFEqual(menuBar, ownerMenuBar),
+              let proxyFrame = axFrame(of: menuBar),
               let sourceScreen = NSScreen.screens.first(where: { screen in
                   screen.displayID != displayID && CGDisplayBounds(screen.displayID).origin == proxyFrame.origin
               }),
@@ -220,9 +229,9 @@ final class MenuBarManager: ObservableObject {
         return ApplicationMenuGeometry.projectedFrame(sourceFrame, on: displayBounds)
     }
 
-    private func applicationMenuFrame(from menuBar: UIElement, displayBounds: CGRect) -> CGRect? {
-        menuBar.messagingTimeout = 0.05
-        guard let items: [UIElement] = try? menuBar.arrayAttribute(.children), !items.isEmpty else {
+    private func applicationMenuFrame(from menuBar: AXUIElement, displayBounds: CGRect) -> CGRect? {
+        AXUIElementSetMessagingTimeout(menuBar, 0.05)
+        guard let items: [AXUIElement] = axAttribute(kAXChildrenAttribute, of: menuBar), !items.isEmpty else {
             return nil
         }
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(200))
@@ -231,13 +240,32 @@ final class MenuBarManager: ObservableObject {
             guard ContinuousClock.now < deadline else {
                 return nil
             }
-            item.messagingTimeout = 0.05
-            guard let frame: CGRect = try? item.attribute(.frame) else {
+            AXUIElementSetMessagingTimeout(item, 0.05)
+            guard let frame = axFrame(of: item) else {
                 return nil
             }
             frames.append(frame)
         }
         return ApplicationMenuGeometry.frame(itemFrames: frames, displayBounds: displayBounds)
+    }
+
+    private func axAttribute<T>(_ name: String, of element: AXUIElement) -> T? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? T
+    }
+
+    private func axFrame(of element: AXUIElement) -> CGRect? {
+        if let axValue: AXValue = axAttribute("AXFrame", of: element),
+           AXValueGetType(axValue) == .cgRect {
+            var rect = CGRect.zero
+            if AXValueGetValue(axValue, .cgRect, &rect) {
+                return rect
+            }
+        }
+        return HostedMenuBarBackend.frame(of: element)
     }
 
     func pauseHiding() {

@@ -115,8 +115,7 @@ extension NSScreen {
     }
 
     var displayID: CGDirectDisplayID {
-        // swiftlint:disable:next force_cast
-        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! CGDirectDisplayID
+        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? kCGNullDirectDisplay
     }
 
     var hasNotch: Bool {

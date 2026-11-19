@@ -5,7 +5,10 @@ root="${0:A:h:h}"
 scratch_directory="$(mktemp -d "${TMPDIR:-/tmp}/ice-hosted-snapshot.XXXXXX")"
 trap 'rm -rf "$scratch_directory"' EXIT
 xcrun swiftc \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarItemHandle.swift" \
     "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend.swift" \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend+Enumeration.swift" \
+    "$root/Ice/MenuBar/MenuBarItems/HostedMenuBarBackend+RenderedSnapshot.swift" \
     "$root/Ice/MenuBar/MenuBarItems/HostedEnumerationScanPolicy.swift" \
     "$root/Ice/Utilities/AsyncSnapshotCache.swift" \
     "$root/Tests/HostedSnapshotSmoke.swift" -o "$scratch_directory/HostedSnapshotSmoke"
